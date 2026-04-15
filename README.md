@@ -1,72 +1,63 @@
 # Monte Carlo for Google Sheets
 
-A Monte Carlo simulation tool that runs entirely inside a Google Sheet as an
-Apps Script. The sheet's existing formulas are left alone; you mark
-distribution inputs and outputs in an extra `MonteCarlo` column, run the
-simulation from a menu, and stats + histograms + sensitivity land on three
-new tabs.
+This is a Monte Carlo simulation tool that runs inside a Google Sheet as an Apps Script. You mark distribution inputs and outputs in an extra column called `MonteCarlo`, and the script samples from those distributions, re-evaluates your formulas in JavaScript, and writes summary stats, histograms, and sensitivity results to three new tabs. Your existing formulas are left alone.
 
-- Runs 10,000 iterations in ~30 seconds on a typical model.
-- No server, no login, no OAuth beyond "access to this spreadsheet".
-- In-JS formula evaluator — the sheet doesn't have to recalc thousands of times.
-- Reproducible (seedable) PRNG; reports Monte Carlo standard errors on every mean.
+A few things to know up front:
 
----
+- It runs 10,000 iterations in around 30 seconds on a typical model.
+- Everything happens inside the sheet. There's no server, no login beyond the OAuth prompt the first time you run it, and no data leaves the spreadsheet.
+- The formula evaluator is written in JavaScript, so the sheet doesn't have to recalculate thousands of times. That's what makes it fast enough to actually use.
+- The PRNG is seedable, and the results sheet reports the Monte Carlo standard error of each mean alongside the mean itself.
+
+There's a section further down called "Known statistics issues" that I'd recommend reading if you're using this for anything that matters. The tool makes some simplifying assumptions that can mislead you if you're not aware of them.
 
 ## Install
 
 1. Open your Google Sheet.
-2. Extensions → Apps Script.
-3. In the editor, delete the default `Code.gs` contents.
-4. Paste the contents of [`dist/MonteCarlo.gs`](dist/MonteCarlo.gs) into the editor.
-5. Save (⌘S / Ctrl+S). Give the project any name.
-6. Reload your Google Sheet.
-7. A new **Monte Carlo** menu appears in the toolbar.
+2. Go to Extensions → Apps Script.
+3. Delete whatever is in `Code.gs` by default.
+4. Paste the contents of [`dist/MonteCarlo.gs`](dist/MonteCarlo.gs) in.
+5. Save the file (⌘S or Ctrl+S).
+6. Reload the Google Sheet.
+7. A new "Monte Carlo" menu should appear in the toolbar.
 
-First run will prompt for OAuth consent. The manifest requests only
-`spreadsheets.currentonly` and `script.container.ui`, so the consent
-screen says "access to this spreadsheet only."
-
----
+The first time you run the simulation, Google will ask for OAuth consent. The manifest asks for the narrowest possible scope (`spreadsheets.currentonly` plus `script.container.ui` for the menu and dialogs), so the consent screen will say something like "access to this spreadsheet only."
 
 ## Sheet format
 
-Structure your data as rows. Add a `MonteCarlo` column; the column immediately
-to its **left** is the "value column" — the one the tool reads outputs from
-and replaces with samples.
+You structure your data in rows, and then add a column called `MonteCarlo`. The column immediately to the left of `MonteCarlo` is the "value column" — that's the one the tool reads outputs from and replaces with samples.
 
-| A (label)       | B (value)             | C (MonteCarlo) | D (param1 / p10) | E (param2 / p90) | F | G |
-|-----------------|-----------------------|----------------|------------------|------------------|---|---|
-| Price per unit  | 100                   | Normal         | 100              | 10               |   |   |
-| Units sold      | 1000                  | LogNormal      | 500              | 2000             |   |   |
-| Fixed costs     | 50000                 | _(blank)_      |                  |                  |   |   |
-| Variable cost   | 0.4                   | Uniform        | 0.3              | 0.5              |   |   |
-| Revenue         | =B2\*B3               |                |                  |                  |   |   |
-| Variable total  | =B3\*B2\*B5           |                |                  |                  |   |   |
-| Profit          | =B6-B7-B4             | Output         |                  |                  |   |   |
+Here's what a simple profit model looks like:
 
-The `MonteCarlo` header can be in any of the first 10 rows. Keywords in
-the column are case-insensitive.
+| A (label)       | B (value)             | C (MonteCarlo) | D (param1 / p10) | E (param2 / p90) |
+|-----------------|-----------------------|----------------|------------------|------------------|
+| Price per unit  | 100                   | Normal         | 100              | 10               |
+| Units sold      | 1000                  | LogNormal      | 500              | 2000             |
+| Fixed costs     | 50000                 | _(blank)_      |                  |                  |
+| Variable cost   | 0.4                   | Uniform        | 0.3              | 0.5              |
+| Revenue         | =B2\*B3               |                |                  |                  |
+| Variable total  | =B3\*B2\*B5           |                |                  |                  |
+| Profit          | =B6-B7-B4             | Output         |                  |                  |
+
+The `MonteCarlo` header can be in any of the first 10 rows. Keywords in the column aren't case-sensitive.
 
 ### MonteCarlo keywords
 
-| Keyword      | What it does                                                    |
-|--------------|-----------------------------------------------------------------|
-| `Normal`     | Value column becomes N(mean, sd) — or N fitted to two quantiles |
-| `LogNormal`  | Value column becomes LogN(mu, sigma) — or fitted to two quantiles |
-| `Uniform`    | Value column becomes U(a, b) — or fitted to two quantiles       |
-| `Discrete`   | Value column becomes weighted choice over (value, weight) pairs |
-| `Output`     | Value column is collected across iterations                     |
-| _(blank)_    | Value column is deterministic (plain value or formula)          |
+| Keyword      | What it does                                                        |
+|--------------|---------------------------------------------------------------------|
+| `Normal`     | Value column becomes N(mean, sd), or N fitted to two quantiles      |
+| `LogNormal`  | Value column becomes LogN(mu, sigma), or fitted to two quantiles    |
+| `Uniform`    | Value column becomes U(a, b), or fitted to two quantiles            |
+| `Discrete`   | Value column becomes a weighted choice over (value, weight) pairs   |
+| `Output`     | Value column is collected across iterations                         |
+| _(blank)_    | Value column is deterministic (a plain value or formula)            |
 
-### Parameter vs quantile mode
+### Parameter mode and quantile mode
 
-The tool detects mode **per row**, based on the headers of the first two
-parameter columns (to the right of `MonteCarlo`):
+The tool detects which mode a row is using based on the headers of the first two columns to the right of `MonteCarlo`:
 
-- If both headers match `p\d+` (e.g. `p10`, `p25`, `p90`) → **quantile mode**.
-  Values are the Nth percentile of the distribution.
-- Otherwise → **parameter mode**. Values are the distribution's raw parameters.
+- If both headers match `p\d+` (e.g., `p10`, `p25`, `p90`), the row is in quantile mode. The values you put there are the Nth percentile of the distribution.
+- Otherwise it's in parameter mode, and the values are the distribution's raw parameters.
 
 | Distribution | Parameter mode       | Quantile mode headers          |
 |--------------|----------------------|--------------------------------|
@@ -75,192 +66,106 @@ parameter columns (to the right of `MonteCarlo`):
 | Uniform      | a, b                 | any two `pN`                   |
 | Discrete     | x1, w1, x2, w2, …    | _not supported_                |
 
-`Discrete` reads every non-blank column after `MonteCarlo` in pairs. Headers
-are ignored for `Discrete`.
+`Discrete` just reads every non-blank column to the right of `MonteCarlo` in pairs. Headers don't matter for `Discrete`.
 
-> ⚠ `Uniform` quantile mode extrapolates: `p10=0, p90=10` implies
-> `a = -1.25, b = 11.25` (the unique Uniform whose 10/90 percentiles
-> hit those values). 20% of samples will land outside `[0, 10]`. If you
-> mean a hard range, use parameter mode.
-
----
+One thing to watch out for: `Uniform` in quantile mode extrapolates out to the endpoints. If you say `p10=0, p90=10`, the unique Uniform distribution whose 10th and 90th percentiles hit those values has `a = -1.25, b = 11.25`. So about 20% of your samples will land outside `[0, 10]`. If what you actually mean is a hard range, use parameter mode instead.
 
 ## Supported formulas
 
-Arithmetic and ~30 common spreadsheet functions.
+The evaluator supports arithmetic and about 30 common spreadsheet functions.
 
-**Operators:** `+ - * / ^`, unary `-`/`+`, concatenation `&`, comparison `= <> < > <= >=`.
+The operators are `+ - * / ^`, unary `-` and `+`, concatenation `&`, and comparison operators (`= <> < > <= >=`).
 
-**Functions:**
-- Math: `SUM AVERAGE MIN MAX COUNT COUNTA MEDIAN STDEV VAR PERCENTILE SUMPRODUCT PRODUCT`
-- Single-arg math: `ABS SQRT EXP LN LOG LOG10 POWER MOD ROUND CEILING FLOOR INT TRUNC PI`
-- Logic: `IF IFS AND OR NOT IFERROR ISERROR ISNUMBER ISBLANK NA TRUE FALSE`
+The functions, grouped by type:
 
-**Not supported (for now):**
+- **Math**: `SUM AVERAGE MIN MAX COUNT COUNTA MEDIAN STDEV VAR PERCENTILE SUMPRODUCT PRODUCT`
+- **Single-argument math**: `ABS SQRT EXP LN LOG LOG10 POWER MOD ROUND CEILING FLOOR INT TRUNC PI`
+- **Logic**: `IF IFS AND OR NOT IFERROR ISERROR ISNUMBER ISBLANK NA TRUE FALSE`
+
+Some things aren't supported:
+
 - Multi-sheet references (`Sheet1!A1`)
 - Named ranges
 - Array formulas (`ARRAYFORMULA`)
-- `RAND`, `RANDBETWEEN` — randomness comes only from marked distributions
-- Text functions beyond `&` concat (`LEFT`, `MID`, `REGEX…`)
+- `RAND` and `RANDBETWEEN` (randomness only comes from marked distributions)
+- Text functions beyond `&` concat (so no `LEFT`, `MID`, `REGEX…`, etc.)
 
-Using an unsupported function throws a clear error *before* the
-simulation starts, naming the cell and the function.
+If you use a function that isn't supported, the tool throws a clear error before the simulation starts that names the cell and the function.
 
----
+## Evaluator semantics
 
-## Evaluator semantics (known deviations from Sheets)
+Since the evaluator is hand-written, there are some edge cases where the behavior is documented rather than matching Sheets exactly. These are all consistent and predictable, but worth knowing if your formulas hit them:
 
-Because the evaluator is hand-written, a few edge cases are documented rather
-than "mimicked exactly". These are all consistent and predictable — they just
-don't always match Sheets bit-for-bit.
-
-- **Blank cells** coerce to `0` for arithmetic. For aggregations like
-  `SUM`/`AVERAGE`/`COUNT`, blanks are skipped. For `IF`, blanks are falsy.
-- **Errors are first-class values**, not exceptions. They propagate through
-  every operator; only `IFERROR` catches them. `LN(-1)`, `SQRT(-1)`,
-  `1/0`, etc. produce `#NUM!` or `#DIV/0!` sentinels that surface as an
-  **Errors** column on the results sheet.
-- **String coercion:** `"5" + 3 = 8`, `TRUE + 1 = 2`, `"abc" + 1 = #VALUE!`.
-- **Comparison:** numeric compare if both sides look numeric, else
-  case-insensitive string compare.
-- **Per-iteration errors** get recorded as `NaN` in the raw samples and
-  counted per output — so a bad path doesn't kill the whole run.
-
----
+- Blank cells coerce to `0` in arithmetic. Aggregation functions like `SUM`, `AVERAGE`, and `COUNT` skip blanks. `IF` treats a blank as falsy.
+- Errors are first-class values, not thrown exceptions. They propagate through every operator, and only `IFERROR` catches them. Things like `LN(-1)`, `SQRT(-1)`, and `1/0` produce `#NUM!` or `#DIV/0!` sentinels, which get counted in the Errors column on the results sheet.
+- String coercion works the way you'd expect: `"5" + 3 = 8`, `TRUE + 1 = 2`, `"abc" + 1 = #VALUE!`.
+- Comparisons: numeric compare if both sides look numeric, otherwise case-insensitive string compare.
+- If an iteration produces an error, it's recorded as `NaN` in the samples and counted per output. One bad path doesn't kill the whole run.
 
 ## Results
 
-Running the simulation creates (or overwrites) three sheets:
+Running the simulation creates, or overwrites, three sheets.
 
-- **MC Results** — per output: mean, **Mean SE** (Monte Carlo standard
-  error of the mean — ±1.96·SE ≈ 95% CI), median, stdev, min, max,
-  percentiles P1–P99, **Eff N** (count of finite samples), and error count.
-  Below: the list of distribution inputs with the resolved parameters,
-  and a column-chart histogram per output (log-spaced bins for
-  highly-skewed outputs).
-- **MC Sensitivity** — Spearman rank correlation of every input against
-  every output. Colored conditionally: red for negative, blue for positive.
-  Banner at the top warns that ρ ≈ 0 doesn't mean an input doesn't matter
-  (see [Known statistics issues](#known-statistics-issues) below).
-- **MC Samples** — raw per-iteration values, one row per iteration, one
-  column per input and output. Useful for pivoting, filtering, or pasting
-  into external tools.
+**MC Results** has a row per output with the mean, the Monte Carlo standard error of the mean (±1.96·SE ≈ 95% CI), the median, stdev, min, max, percentiles P1–P99, effective N (count of finite samples), and the error count. Below that, it lists the distribution inputs with their resolved parameters. And below that, there's a column-chart histogram per output. The histograms switch to log-spaced bins when the output is highly skewed, because LogNormal-style outputs are essentially unreadable with linear bins.
 
----
+**MC Sensitivity** shows the Spearman rank correlation between every input and every output, with conditional formatting (red for negative, blue for positive). There's a banner at the top noting that ρ close to 0 doesn't mean an input doesn't matter, which I explain more in the statistics section below.
+
+**MC Samples** has one row per iteration and one column per input and output. It's useful if you want to pivot, filter, or paste into another tool.
 
 ## Known statistics issues
 
-A statistician would flag these as problems. Most have non-trivial fixes that
-are out of scope for v1; if you're using this for anything load-bearing,
-read this section.
+A statistician would flag these as problems. Most have non-trivial fixes that are out of scope for this version. If you're using this tool for anything load-bearing, I'd recommend reading this section.
 
 ### Things you might genuinely be misled by
 
-- **`Mean` is conditional on success when `Errors > 0`.** When some
-  iterations error out (e.g. `LN(X)` hits a negative `X` once in 200
-  draws), those iterations are dropped from the mean calculation. The
-  reported mean is `E[output | output is finite]`, **not** the
-  unconditional expectation. If errors correlate with one tail (they
-  usually do — they happen *because* the input went somewhere bad), the
-  reported mean is biased toward the safe tail. The Results sheet shows
-  a warning banner when this happens.
-- **No confidence intervals on percentiles.** We report `Mean SE` (which
-  gives a 95% CI on the mean as `Mean ± 1.96·SE`), but **not** SEs on
-  P5/P95/P99. Tail-percentile estimates have meaningfully more variance
-  than central ones — at N=10k, P99 can shift by several percent
-  between runs with different seeds. If you're making a decision based
-  on a tail percentile, run the sim 5×-10× with different seeds and look
-  at the spread.
-- **Spearman ≠ "input importance".** The MC Sensitivity sheet shows
-  Spearman rank correlation. ρ near 0 does **not** mean an input is
-  unimportant. It only means the input has no monotonic relationship
-  with the output. Counter-examples that defeat Spearman:
-  - `Y = X²` with `X ~ N(0,1)`: ρ = 0, but X explains 100% of Y.
-  - `Y = X₁ · X₂` with both `X_i ~ N(0,1)` independent: each ρ ≈ 0 AND
-    each first-order Sobol index is 0 — neither input explains any
-    variance *on its own*. But the total-order Sobol indices are both 1:
-    each input is essential, with 100% of the variance living in the
-    interaction term. Spearman can't see this, and neither can
-    first-order Sobol; you need total-order indices.
-  - Threshold/regime models like `Y = X₁ if X₂ > 0 else -X₁`: each ρ ≈ 0.
-  Use this as a screening tool, not as a true sensitivity analysis.
-  For variance decomposition (Sobol indices) you need a different tool.
-- **Inputs are sampled independently.** No correlation/copula support.
-  Real models often have correlated inputs (returns and volatility,
-  demand and price, costs and revenues). Sampling them independently
-  understates joint tail risk and produces optimistic "bad outcome"
-  tails. If your inputs should move together, this tool will silently
-  ignore that.
+**Mean is conditional on success when Errors is greater than zero.** If some iterations error out (say, `LN(X)` hits a negative `X` once in 200 draws), those iterations are dropped from the mean calculation. What gets reported is `E[output | output is finite]`, not the unconditional expectation. If errors correlate with one tail of the distribution — which they usually do, because they happen when an input went somewhere bad — the reported mean is biased toward the safe tail. The Results sheet shows a warning banner when this happens.
+
+**There are no confidence intervals on the percentiles.** The tool reports `Mean SE` alongside the mean, which gives a 95% CI on the mean as `Mean ± 1.96·SE`. But it doesn't do the same for P5, P95, P99, and so on. Tail-percentile estimates have a lot more variance than central ones. At N=10,000, P99 can shift by several percent between runs with different seeds. If you're making a decision based on a tail percentile, I'd recommend running the simulation 5 to 10 times with different seeds to see the spread.
+
+**Spearman isn't "input importance."** The MC Sensitivity sheet shows Spearman rank correlation. ρ near 0 doesn't mean an input is unimportant. It only means the input doesn't have a monotonic relationship with the output. A few examples that defeat Spearman:
+
+- `Y = X²` with `X ~ N(0,1)`: ρ = 0, but X explains 100% of Y.
+- `Y = X₁ · X₂` with both `X_i ~ N(0,1)` independent: each ρ ≈ 0, and so is each first-order Sobol index. Neither input explains any variance on its own. But the total-order Sobol indices are both 1, which means each input is essential, with 100% of the variance living in the interaction term. Spearman can't see this, and neither can first-order variance decomposition. You need total-order indices for it.
+- Threshold models like `Y = X₁ if X₂ > 0 else -X₁`: each ρ ≈ 0.
+
+I'd treat the sensitivity sheet as a screening tool, not a real variance decomposition. For a real one, you need Sobol indices, which require different sampling and are out of scope here.
+
+**Inputs are sampled independently.** The tool doesn't support correlated inputs. Real models often have them (returns and volatility, demand and price, costs and revenues). Sampling them independently understates joint tail risk and produces optimistic "bad outcome" tails. If your inputs should move together, this tool will silently ignore that.
 
 ### Choices a statistician would push back on
 
-- **Vanilla Monte Carlo, no variance reduction.** Convergence is `1/√N`.
-  Quasi-random sequences (Sobol, Halton) converge close to `1/N`. Latin
-  Hypercube gives stratified coverage for free. Antithetic variates
-  halve the variance for symmetric distributions at zero cost. None
-  implemented. To halve your reported `Mean SE`, you currently have to
-  4× the iteration count.
-- **Percentile interpolation is Hyndman-Fan type 7** (the Excel/Sheets
-  default). Statisticians often prefer type 8, which is approximately
-  median-unbiased independent of the underlying distribution. The
-  difference is in the third decimal at N=10k.
-- **`PERCENTILE()` formula function uses type 7** for Sheets parity. The
-  summary stats on the MC Results sheet also use type 7 for consistency
-  with the in-sheet `PERCENTILE()` function.
+**Vanilla Monte Carlo, no variance reduction.** Convergence is `1/√N`. Quasi-random sequences like Sobol or Halton converge closer to `1/N`. Latin Hypercube gives stratified coverage for free. Antithetic variates halve the variance for symmetric distributions at zero cost. None of these are implemented. If you want to halve your reported `Mean SE`, you currently have to 4x the iteration count.
 
-### Numerical / minor
+**Percentile interpolation uses Hyndman-Fan type 7**, which is the Excel/Sheets default. Statisticians often prefer type 8, which is approximately median-unbiased independent of the underlying distribution. The difference is in the third decimal at N=10,000. The `PERCENTILE()` formula function also uses type 7 for Sheets parity, and the summary stats on the MC Results sheet use type 7 for consistency with that.
 
-- The PRNG is **mulberry32** (32-bit state, 2^32 period). Seed is mixed
-  via a Murmur3-style finalizer first, so close auto-seeds (e.g.
-  consecutive `Date.now()`) produce well-separated streams. For runs
-  with > ~10⁸ total RNG draws (large model × many iterations × many
-  re-runs), the period becomes a real concern; consider xoshiro128++.
-- Normals are generated via the **Marsaglia polar method** with the
-  second variate cached. The polar method rejects ~21.5% of candidate
-  pairs (the ones outside the unit disk), so the amortized cost is
-  ~1.27 uniforms per normal — not 1-to-1.
-- Errors during evaluation never throw — they propagate through the
-  formula as `#DIV/0!` / `#NUM!` / `#VALUE!` sentinels, get recorded as
-  `NaN` in samples, and increment the output's Errors counter.
+### Numerical and minor
+
+- The PRNG is mulberry32 (32-bit state, period 2^32). Seeds are mixed through a Murmur3-style finalizer first, so close auto-seeds (like consecutive `Date.now()` values) produce well-separated streams. For runs with more than ~10⁸ total RNG draws (big model × many iterations × many re-runs), the period becomes a real concern, and you'd want to swap in something like xoshiro128++.
+- Normals are generated with the Marsaglia polar method, with the second variate cached. The polar method rejects about 21.5% of candidate pairs (the ones outside the unit disk), so the amortized cost is around 1.27 uniforms per normal, not 1-to-1.
+- Errors during evaluation never throw. They propagate through the formula as `#DIV/0!`, `#NUM!`, or `#VALUE!` sentinels, get recorded as `NaN` in the samples, and increment the output's Errors counter.
 
 ### What I'd add if you were using this for real stats (and not forecasting or casual use)
 
-If you're going to extend this:
+If you're going to extend this, here's where I'd start:
 
-1. **Bootstrap CIs on every percentile** (1000 resamples is enough; pure
-   ranking, fast in JS).
-2. **Sobol sensitivity indices** with Saltelli sampling — first-order
-   AND total-order, so you get interaction effects.
-3. **Latin Hypercube + antithetic variates** — free 2–4× variance
-   reduction.
-4. **Correlated input support** via a Cholesky factor on a user-supplied
-   correlation matrix (Iman-Conover preserves marginals).
-5. **Handle failure regions explicitly**, not by re-sampling. Re-sampling
-   until you hit N just gets you a bigger sample from the success region —
-   the reported mean is still `E[Y | Y is finite]`, not the unconditional
-   `E[Y]`. To actually fix the bias you need imputation (assign some value
-   to the failure region, e.g. 0, or a modeled extreme) or bounds (report
-   `Mean_lower` assuming failures = min observed and `Mean_upper` assuming
-   failures = max observed), so the user sees the size of the unknown.
+1. **Bootstrap CIs on every percentile.** 1000 resamples is usually enough, and it's fast in JS because it's pure ranking.
+2. **Sobol sensitivity indices with Saltelli sampling.** You want both first-order and total-order, so you pick up the interaction effects that Spearman and first-order variance decomposition both miss.
+3. **Latin Hypercube plus antithetic variates.** Free 2–4x variance reduction.
+4. **Correlated input support** via a Cholesky factor on a user-supplied correlation matrix. Iman-Conover preserves the marginals.
+5. **Handle failure regions explicitly**, not by resampling them. Resampling until you hit N just gets you a bigger sample from the success region — the reported mean is still `E[Y | Y is finite]`, not the unconditional `E[Y]`. To actually fix the bias, you need imputation (assign some value to the failure region, like 0 or a modeled extreme) or bounds (report `Mean_lower` assuming failures equal the min observed and `Mean_upper` assuming they equal the max observed), so the user sees the size of the unknown.
 
----
+For forecasting and casual use, I wouldn't worry about any of this. The tool as-is is fine for that.
 
 ## Menu items
 
-- **Run Simulation** — default 10,000 iterations. Shows a summary of what
-  was detected ("Found 4 inputs, 2 outputs, 35 formula cells. Run?") before
-  kicking off.
-- **Run Simulation (custom…)** — prompts for iteration count and a
-  reproducibility seed.
-- **Insert Example Layout** — drops a demo "MC Example" sheet with a
-  profit model already set up.
-- **Help / Format Reference** — quick in-app reminder of the format.
-
----
+- **Run Simulation** runs with the default of 10,000 iterations. Before kicking off, it shows a summary of what it detected ("Found 4 inputs, 2 outputs, 35 formula cells. Run?") so you can catch misconfigurations cheaply.
+- **Run Simulation (custom…)** prompts for the iteration count and a reproducibility seed.
+- **Insert Example Layout** adds an "MC Example" sheet with a profit model already set up.
+- **Help / Format Reference** is an in-app reminder of the format.
 
 ## Performance
 
-On a typical model (50 cells, 20 formula cells):
+On a typical model with around 50 cells and 20 formula cells:
 
 | Iterations | Approximate time |
 |-----------:|:-----------------|
@@ -268,38 +173,21 @@ On a typical model (50 cells, 20 formula cells):
 |     10,000 | ~20–30 s         |
 |    100,000 | ~2–3 min         |
 
-Google Apps Script has a 6-minute per-invocation execution cap. At ~100
-formula cells × 50,000 iterations you start approaching it — the
-custom-iteration dialog accepts up to 200,000.
-
----
+Google Apps Script has a 6-minute per-invocation execution cap. At around 100 formula cells and 50,000 iterations you start to approach it. The custom-iteration dialog accepts up to 200,000.
 
 ## Test-in-Sheets checklist
 
-After pasting `dist/MonteCarlo.gs` into Apps Script, run through these to
-confirm nothing's broken in your install:
+After pasting `dist/MonteCarlo.gs` into Apps Script, here are a few things to run through to confirm everything works:
 
-1. **Example model.** Click *Monte Carlo → Insert Example Layout*, then
-   *Monte Carlo → Run Simulation*. You should see three new sheets and a
-   histogram on *MC Results*. Mean profit is roughly 45–50k.
-2. **Reproducibility.** Run *Run Simulation (custom…)* with iterations=5000
-   and seed=42. Note the P50 for profit. Run it again with the same seed.
-   The P50 should match exactly.
-3. **Cycle detection.** In any sheet with a `MonteCarlo` column, make
-   cell B2 `=B3` and cell B3 `=B2`. Run the simulation. You should see
-   an alert: *"Circular reference detected among cells: B2, B3."*
-4. **Unknown function.** Add a formula `=FOOBAR(1)` in the value column of a
-   row marked as `Output`. Running should surface *"Cell X: Unknown function
-   FOOBAR"* before the simulation starts.
-5. **Quantile mode.** Set up a row: label `X`, value `0`, MonteCarlo
-   `Normal`, headers `p10`, `p90` with values `0` and `10`. Output that
-   cell. P10 should come back near 0, P90 near 10.
-
----
+1. **Example model.** Click Monte Carlo → Insert Example Layout, then Monte Carlo → Run Simulation. You should see three new sheets and a histogram on MC Results. Mean profit should be roughly 45,000 to 50,000.
+2. **Reproducibility.** Run "Run Simulation (custom…)" with iterations=5000 and seed=42. Note the P50 for profit, then run it again with the same seed. The P50 should match exactly.
+3. **Cycle detection.** In a sheet with a `MonteCarlo` column, make cell B2 `=B3` and cell B3 `=B2`. Running the simulation should surface an alert saying "Circular reference detected among cells: B2, B3."
+4. **Unknown function.** Add a formula `=FOOBAR(1)` in the value column of a row marked as `Output`. Running should surface "Cell X: Unknown function FOOBAR" before the simulation starts.
+5. **Quantile mode.** Set up a row with label `X`, value `0`, MonteCarlo `Normal`, and headers `p10` and `p90` with values `0` and `10`. Mark that cell as an output. P10 should come back near 0 and P90 near 10.
 
 ## Development
 
-### Directory layout
+Project layout:
 
 ```
 src/
@@ -309,7 +197,7 @@ src/
   Distributions.gs        PRNG (mulberry32 + mixSeed), samplers, quantile solvers
   FormulaLexer.gs         Tokenize formulas
   FormulaParser.gs        Pratt parser → AST
-  FormulaFunctions.gs     Registry of ~30 functions w/ error semantics
+  FormulaFunctions.gs     Registry of ~30 functions with error semantics
   FormulaEvaluator.gs     Walk AST against a state map
   DependencyGraph.gs      Topo-sort formula cells
   Simulation.gs           Main loop
@@ -318,49 +206,41 @@ src/
 
 tests/
   harness.js              VM-based shared-context loader + test framework
-  *.test.js               Node unit + integration tests
-  smoke-test.jxa.js       20 smoke tests runnable via macOS osascript (no install)
+  *.test.js               Node unit and integration tests
+  smoke-test.jxa.js       20 smoke tests you can run via osascript (no install)
   run-tests.js            Runs everything
 
 dist/
-  MonteCarlo.gs           Single-file bundle (generated by build.py)
+  MonteCarlo.gs           Single-file bundle generated by build.py
 
 build.py                  Concatenates src/ → dist/MonteCarlo.gs
 ```
 
-### Bundle build
+### Building the bundle
 
 ```
 python3 build.py
 ```
 
-Strips the Node-only `module.exports` trailers and writes `dist/MonteCarlo.gs`.
+This strips the Node-only `module.exports` trailers from each source file and writes the combined `dist/MonteCarlo.gs`.
 
-### Tests
+### Running the tests
 
-**Without Node** (macOS only — uses the built-in JavaScriptCore):
+If you don't have Node installed, you can still run a representative subset on macOS using the built-in JavaScriptCore:
 
 ```
 /usr/bin/osascript -l JavaScript tests/smoke-test.jxa.js
 ```
 
-Runs 20 representative tests covering PRNG (incl. seed mixing and seed=0),
-parser, evaluator (incl. error propagation), end-to-end simulation,
-quantile-mode sampling, cycle detection, sensitivity analysis, the
-ModelReader, log-spaced histograms for skewed data, and Pearson on
-zero-variance inputs. No install.
+That runs 20 tests covering the PRNG (including seed mixing and seed=0), the parser, the evaluator (including error propagation), end-to-end simulation, quantile-mode sampling, cycle detection, sensitivity analysis, the ModelReader, log-spaced histograms for skewed data, and Pearson on zero-variance inputs.
 
-**Full suite** (requires Node):
+If you do have Node, you can run the full suite:
 
 ```
 node tests/run-tests.js
 ```
 
-The harness loads every `.gs` source into a shared `vm` context (mimicking
-Apps Script's global scope), then each `*.test.js` file registers tests via
-`h.test(name, fn)`.
-
----
+The harness loads every `.gs` source into a shared `vm` context (mimicking Apps Script's global scope), and each `*.test.js` file registers tests via `h.test(name, fn)`.
 
 ## License
 
