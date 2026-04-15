@@ -150,7 +150,7 @@ Running the simulation creates (or overwrites) three sheets:
 
 ## Known statistics issues
 
-A real statistician would flag these. Most have non-trivial fixes that
+A statistician would flag these as problems. Most have non-trivial fixes that
 are out of scope for v1; if you're using this for anything load-bearing,
 read this section.
 
