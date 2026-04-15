@@ -176,8 +176,12 @@ read this section.
   unimportant. It only means the input has no monotonic relationship
   with the output. Counter-examples that defeat Spearman:
   - `Y = X²` with `X ~ N(0,1)`: ρ = 0, but X explains 100% of Y.
-  - `Y = X₁ · X₂` with both `X_i ~ N(0,1)` independent: each ρ ≈ 0,
-    but each input explains ~50% of the variance.
+  - `Y = X₁ · X₂` with both `X_i ~ N(0,1)` independent: each ρ ≈ 0 AND
+    each first-order Sobol index is 0 — neither input explains any
+    variance *on its own*. But the total-order Sobol indices are both 1:
+    each input is essential, with 100% of the variance living in the
+    interaction term. Spearman can't see this, and neither can
+    first-order Sobol; you need total-order indices.
   - Threshold/regime models like `Y = X₁ if X₂ > 0 else -X₁`: each ρ ≈ 0.
   Use this as a screening tool, not as a true sensitivity analysis.
   For variance decomposition (Sobol indices) you need a different tool.
@@ -212,7 +216,9 @@ read this section.
   with > ~10⁸ total RNG draws (large model × many iterations × many
   re-runs), the period becomes a real concern; consider xoshiro128++.
 - Normals are generated via the **Marsaglia polar method** with the
-  second variate cached, so N independent normals cost N+1 uniforms.
+  second variate cached. The polar method rejects ~21.5% of candidate
+  pairs (the ones outside the unit disk), so the amortized cost is
+  ~1.27 uniforms per normal — not 1-to-1.
 - Errors during evaluation never throw — they propagate through the
   formula as `#DIV/0!` / `#NUM!` / `#VALUE!` sentinels, get recorded as
   `NaN` in samples, and increment the output's Errors counter.
@@ -229,9 +235,13 @@ If you're going to extend this:
    reduction.
 4. **Correlated input support** via a Cholesky factor on a user-supplied
    correlation matrix (Iman-Conover preserves marginals).
-5. **Re-sample failed iterations** until you hit the requested N, so the
-   reported mean is unbiased even when the model has thin-failure
-   regions.
+5. **Handle failure regions explicitly**, not by re-sampling. Re-sampling
+   until you hit N just gets you a bigger sample from the success region —
+   the reported mean is still `E[Y | Y is finite]`, not the unconditional
+   `E[Y]`. To actually fix the bias you need imputation (assign some value
+   to the failure region, e.g. 0, or a modeled extreme) or bounds (report
+   `Mean_lower` assuming failures = min observed and `Mean_upper` assuming
+   failures = max observed), so the user sees the size of the unknown.
 
 ---
 
