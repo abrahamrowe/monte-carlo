@@ -217,7 +217,7 @@ read this section.
   formula as `#DIV/0!` / `#NUM!` / `#VALUE!` sentinels, get recorded as
   `NaN` in samples, and increment the output's Errors counter.
 
-### What I'd add if I were doing this for real
+### What I'd add if you were using this for real stats (and not forecasting or casual use)
 
 If you're going to extend this:
 
