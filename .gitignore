@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# Claude Code session/local settings — machine-specific, not part of the project
+.claude/
+
+# Editor scratch
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# In case Node ever shows up
+node_modules/
+npm-debug.log*
