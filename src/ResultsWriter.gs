@@ -17,6 +17,11 @@ var MC_SHEET_RESULTS     = 'MC Results';
 var MC_SHEET_SENSITIVITY = 'MC Sensitivity';
 var MC_SHEET_SAMPLES     = 'MC Samples';
 
+/** Guard against NaN/Infinity reaching setValues(), which would write the string "NaN". */
+function safe_(v) {
+  return (typeof v === 'number' && !isFinite(v)) ? '' : v;
+}
+
 function writeAllResults_(spreadsheet, simResult) {
   var resultsSheet = getOrResetSheet_(spreadsheet, MC_SHEET_RESULTS);
   var sensSheet    = getOrResetSheet_(spreadsheet, MC_SHEET_SENSITIVITY);
@@ -77,11 +82,11 @@ function writeResultsSheet_(sheet, sim) {
     var s = stats[ref];
     rows.push([
       sim.labelOf(ref), ref,
-      s.mean, s.meanSE, s.median, s.stdev, s.min,
-      s.percentiles.p1,  s.percentiles.p5,  s.percentiles.p10,
-      s.percentiles.p25, s.percentiles.p50, s.percentiles.p75,
-      s.percentiles.p90, s.percentiles.p95, s.percentiles.p99,
-      s.max, s.count, s.errorCount
+      safe_(s.mean), safe_(s.meanSE), safe_(s.median), safe_(s.stdev), safe_(s.min),
+      safe_(s.percentiles.p1),  safe_(s.percentiles.p5),  safe_(s.percentiles.p10),
+      safe_(s.percentiles.p25), safe_(s.percentiles.p50), safe_(s.percentiles.p75),
+      safe_(s.percentiles.p90), safe_(s.percentiles.p95), safe_(s.percentiles.p99),
+      safe_(s.max), s.count, s.errorCount
     ]);
   }
   if (rows.length > 0) {

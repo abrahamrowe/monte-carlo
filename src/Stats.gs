@@ -54,7 +54,7 @@ function summarize_(samples, totalIterations) {
   var stdev = n > 1 ? Math.sqrt(ssq / (n - 1)) : 0;
   var meanSE = n > 1 ? stdev / Math.sqrt(n) : 0;
 
-  // Sample skewness (used to decide log-vs-linear histogram bins).
+  // Adjusted Fisher-Pearson sample skewness (consistent with Bessel-corrected stdev).
   var skewness = 0;
   if (stdev > 0 && n > 2) {
     var sk = 0;
@@ -62,7 +62,7 @@ function summarize_(samples, totalIterations) {
       var dt = (clean[t] - mean) / stdev;
       sk += dt * dt * dt;
     }
-    skewness = sk / n;
+    skewness = (n / ((n - 1) * (n - 2))) * sk;
   }
 
   var sorted = clean.slice().sort(function (a, b) { return a - b; });
@@ -251,7 +251,7 @@ function skewnessOf_(clean) {
     var dk = (clean[k] - mean) / sd;
     sk += dk * dk * dk;
   }
-  return sk / n;
+  return (n / ((n - 1) * (n - 2))) * sk;
 }
 
 // =====================================================================

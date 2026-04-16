@@ -159,9 +159,11 @@ function countByKind_(cells, kind) {
 }
 
 function normalizeCellValue_(v) {
-  // Date objects come back from Sheets — keep them as-is for now; arithmetic will error.
-  // Booleans and numbers pass through.
-  if (v instanceof Date) return v;
+  // Date objects come back from Sheets for date-formatted cells. Coerce
+  // to their numeric epoch-ms value so arithmetic works (matching Sheets'
+  // internal representation as a serial number, roughly). Without this,
+  // dates become opaque objects that silently error in formulas.
+  if (v instanceof Date) return v.getTime();
   return v;
 }
 

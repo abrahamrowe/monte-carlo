@@ -313,4 +313,34 @@ check('mixSeed_ produces well-separated streams for close seeds', function () {
   if (maxClose >= 3) throw new Error('close seeds produced ' + maxClose + '/5 near-identical first uniforms — mixSeed may not be doing its job');
 });
 
+// 12. Fix: IF evaluates lazily — guarded branch doesn't error
+check('IF lazy eval: =IF(B1>0, LN(B1), 0) does NOT error when B1>0', function () {
+  // Without lazy eval, LN(B1) and the fallback 0 are BOTH evaluated
+  // eagerly, so LN(-5) would produce #NUM! even though the guard
+  // steers to the fallback branch.
+  var ast = t.parseFormula_('=IF(A1>0, A1*2, 0)');
+  var v = t.evalAst_(ast, { A1: -5 });
+  // A1=-5, so condition is false, result should be 0 — NOT an error.
+  if (v !== 0) throw new Error('expected 0, got ' + JSON.stringify(v));
+
+  // Now test the positive branch:
+  var v2 = t.evalAst_(ast, { A1: 5 });
+  if (v2 !== 10) throw new Error('expected 10, got ' + v2);
+});
+
+check('IF lazy eval: false branch with error does not propagate', function () {
+  // =IF(TRUE, 42, 1/0) should return 42, not #DIV/0!
+  var ast = t.parseFormula_('=IF(TRUE, 42, 1/0)');
+  var v = t.evalAst_(ast, {});
+  if (v !== 42) throw new Error('expected 42, got ' + JSON.stringify(v));
+});
+
+check('IF lazy eval: =IF(B1>0, LN(B1), -999) with negative B1', function () {
+  // The critical real-world pattern: user writes a guard, expects LN(B1)
+  // NOT to be evaluated when B1<=0.
+  var ast = t.parseFormula_('=IF(A1>0, LN(A1), -999)');
+  var v = t.evalAst_(ast, { A1: -5 });
+  if (v !== -999) throw new Error('expected -999 (guarded), got ' + JSON.stringify(v));
+});
+
 results.join('\n');

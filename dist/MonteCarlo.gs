@@ -162,7 +162,13 @@ function sampleDiscrete_(rng, values, cumWeights) {
 function solveNormalFromQuantiles_(p1, v1, p2, v2) {
   var z1 = inverseNormalCDF_(p1);
   var z2 = inverseNormalCDF_(p2);
-  var sd = (v2 - v1) / (z2 - z1);
+  var dz = z2 - z1;
+  if (Math.abs(dz) < 1e-6) {
+    throw new Error('Quantile percentiles are too close together (p' +
+      (p1 * 100) + ' and p' + (p2 * 100) + ' produce nearly identical z-scores). ' +
+      'Use percentiles at least a few points apart, e.g. p10/p90 or p25/p75.');
+  }
+  var sd = (v2 - v1) / dz;
   var mean = v1 - z1 * sd;
   return { mean: mean, sd: sd };
 }
@@ -1321,11 +1327,36 @@ function evalCall_(ast, state) {
   if (!fn) {
     return makeError_(MC_ERR_NAME);
   }
+
+  // IF and IFS need lazy evaluation: only evaluate the branch that's
+  // actually taken. Without this, =IF(B1>0, LN(B1), 0) would error
+  // when B1<=0 because the LN(B1) branch is evaluated eagerly.
+  if (ast.name === 'IF')  return evalIF_(ast.args, state);
+  if (ast.name === 'IFS') return evalIFS_(ast.args, state);
+
   var args = new Array(ast.args.length);
   for (var i = 0; i < ast.args.length; i++) {
     args[i] = evalAst_(ast.args[i], state);
   }
   return fn(args, state);
+}
+
+function evalIF_(argAsts, state) {
+  if (argAsts.length < 2 || argAsts.length > 3) return makeError_(MC_ERR_VALUE);
+  var cond = toBoolean_(evalAst_(argAsts[0], state));
+  if (isError_(cond)) return cond;
+  if (cond) return evalAst_(argAsts[1], state);
+  return argAsts.length === 3 ? evalAst_(argAsts[2], state) : false;
+}
+
+function evalIFS_(argAsts, state) {
+  if (argAsts.length % 2 !== 0 || argAsts.length === 0) return makeError_(MC_ERR_VALUE);
+  for (var i = 0; i < argAsts.length; i += 2) {
+    var cond = toBoolean_(evalAst_(argAsts[i], state));
+    if (isError_(cond)) return cond;
+    if (cond) return evalAst_(argAsts[i + 1], state);
+  }
+  return makeError_(MC_ERR_NA);
 }
 
 // ---------------------------------------------------------------------
@@ -1587,7 +1618,7 @@ function summarize_(samples, totalIterations) {
   var stdev = n > 1 ? Math.sqrt(ssq / (n - 1)) : 0;
   var meanSE = n > 1 ? stdev / Math.sqrt(n) : 0;
 
-  // Sample skewness (used to decide log-vs-linear histogram bins).
+  // Adjusted Fisher-Pearson sample skewness (consistent with Bessel-corrected stdev).
   var skewness = 0;
   if (stdev > 0 && n > 2) {
     var sk = 0;
@@ -1595,7 +1626,7 @@ function summarize_(samples, totalIterations) {
       var dt = (clean[t] - mean) / stdev;
       sk += dt * dt * dt;
     }
-    skewness = sk / n;
+    skewness = (n / ((n - 1) * (n - 2))) * sk;
   }
 
   var sorted = clean.slice().sort(function (a, b) { return a - b; });
@@ -1784,7 +1815,7 @@ function skewnessOf_(clean) {
     var dk = (clean[k] - mean) / sd;
     sk += dk * dk * dk;
   }
-  return sk / n;
+  return (n / ((n - 1) * (n - 2))) * sk;
 }
 
 // =====================================================================
@@ -2094,9 +2125,11 @@ function countByKind_(cells, kind) {
 }
 
 function normalizeCellValue_(v) {
-  // Date objects come back from Sheets — keep them as-is for now; arithmetic will error.
-  // Booleans and numbers pass through.
-  if (v instanceof Date) return v;
+  // Date objects come back from Sheets for date-formatted cells. Coerce
+  // to their numeric epoch-ms value so arithmetic works (matching Sheets'
+  // internal representation as a serial number, roughly). Without this,
+  // dates become opaque objects that silently error in formulas.
+  if (v instanceof Date) return v.getTime();
   return v;
 }
 
@@ -2204,6 +2237,11 @@ var MC_SHEET_RESULTS     = 'MC Results';
 var MC_SHEET_SENSITIVITY = 'MC Sensitivity';
 var MC_SHEET_SAMPLES     = 'MC Samples';
 
+/** Guard against NaN/Infinity reaching setValues(), which would write the string "NaN". */
+function safe_(v) {
+  return (typeof v === 'number' && !isFinite(v)) ? '' : v;
+}
+
 function writeAllResults_(spreadsheet, simResult) {
   var resultsSheet = getOrResetSheet_(spreadsheet, MC_SHEET_RESULTS);
   var sensSheet    = getOrResetSheet_(spreadsheet, MC_SHEET_SENSITIVITY);
@@ -2264,11 +2302,11 @@ function writeResultsSheet_(sheet, sim) {
     var s = stats[ref];
     rows.push([
       sim.labelOf(ref), ref,
-      s.mean, s.meanSE, s.median, s.stdev, s.min,
-      s.percentiles.p1,  s.percentiles.p5,  s.percentiles.p10,
-      s.percentiles.p25, s.percentiles.p50, s.percentiles.p75,
-      s.percentiles.p90, s.percentiles.p95, s.percentiles.p99,
-      s.max, s.count, s.errorCount
+      safe_(s.mean), safe_(s.meanSE), safe_(s.median), safe_(s.stdev), safe_(s.min),
+      safe_(s.percentiles.p1),  safe_(s.percentiles.p5),  safe_(s.percentiles.p10),
+      safe_(s.percentiles.p25), safe_(s.percentiles.p50), safe_(s.percentiles.p75),
+      safe_(s.percentiles.p90), safe_(s.percentiles.p95), safe_(s.percentiles.p99),
+      safe_(s.max), s.count, s.errorCount
     ]);
   }
   if (rows.length > 0) {

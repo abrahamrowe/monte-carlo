@@ -148,7 +148,13 @@ function sampleDiscrete_(rng, values, cumWeights) {
 function solveNormalFromQuantiles_(p1, v1, p2, v2) {
   var z1 = inverseNormalCDF_(p1);
   var z2 = inverseNormalCDF_(p2);
-  var sd = (v2 - v1) / (z2 - z1);
+  var dz = z2 - z1;
+  if (Math.abs(dz) < 1e-6) {
+    throw new Error('Quantile percentiles are too close together (p' +
+      (p1 * 100) + ' and p' + (p2 * 100) + ' produce nearly identical z-scores). ' +
+      'Use percentiles at least a few points apart, e.g. p10/p90 or p25/p75.');
+  }
+  var sd = (v2 - v1) / dz;
   var mean = v1 - z1 * sd;
   return { mean: mean, sd: sd };
 }

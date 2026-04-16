@@ -121,11 +121,36 @@ function evalCall_(ast, state) {
   if (!fn) {
     return makeError_(MC_ERR_NAME);
   }
+
+  // IF and IFS need lazy evaluation: only evaluate the branch that's
+  // actually taken. Without this, =IF(B1>0, LN(B1), 0) would error
+  // when B1<=0 because the LN(B1) branch is evaluated eagerly.
+  if (ast.name === 'IF')  return evalIF_(ast.args, state);
+  if (ast.name === 'IFS') return evalIFS_(ast.args, state);
+
   var args = new Array(ast.args.length);
   for (var i = 0; i < ast.args.length; i++) {
     args[i] = evalAst_(ast.args[i], state);
   }
   return fn(args, state);
+}
+
+function evalIF_(argAsts, state) {
+  if (argAsts.length < 2 || argAsts.length > 3) return makeError_(MC_ERR_VALUE);
+  var cond = toBoolean_(evalAst_(argAsts[0], state));
+  if (isError_(cond)) return cond;
+  if (cond) return evalAst_(argAsts[1], state);
+  return argAsts.length === 3 ? evalAst_(argAsts[2], state) : false;
+}
+
+function evalIFS_(argAsts, state) {
+  if (argAsts.length % 2 !== 0 || argAsts.length === 0) return makeError_(MC_ERR_VALUE);
+  for (var i = 0; i < argAsts.length; i += 2) {
+    var cond = toBoolean_(evalAst_(argAsts[i], state));
+    if (isError_(cond)) return cond;
+    if (cond) return evalAst_(argAsts[i + 1], state);
+  }
+  return makeError_(MC_ERR_NA);
 }
 
 // ---------------------------------------------------------------------
