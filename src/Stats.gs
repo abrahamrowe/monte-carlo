@@ -301,6 +301,11 @@ function convergenceDiagnostic_(samples, nBatches) {
  * Build a CDF table from samples: sorted values + continuity-corrected
  * cumulative probabilities, subsampled to at most maxPoints for charting.
  *
+ * The data is trimmed to the P1–P99 range to avoid long-tail compression
+ * on the chart (a few extreme outliers would otherwise push all the
+ * interesting S-curve shape into a tiny sliver on the left). The exact
+ * tail values are already in the stats table.
+ *
  * Returns { values: [...], cdf: [...] }.
  */
 function buildCDF_(samples, maxPoints) {
@@ -313,17 +318,25 @@ function buildCDF_(samples, maxPoints) {
   if (clean.length === 0) return { values: [], cdf: [] };
   clean.sort(function (a, b) { return a - b; });
   var n = clean.length;
-  // Subsample evenly
-  var step = Math.max(1, Math.floor(n / maxPoints));
+
+  // Trim to P1–P99 so the chart shows the interesting region, not the
+  // long flat tails. With 10k samples and a LogNormal, without trimming
+  // the top 1% can stretch the x-axis 10x past the median.
+  var lo = Math.max(0, Math.floor(n * 0.01));
+  var hi = Math.min(n - 1, Math.ceil(n * 0.99));
+  var trimN = hi - lo + 1;
+
+  // Subsample within the trimmed range
+  var step = Math.max(1, Math.floor(trimN / maxPoints));
   var values = [], cdf = [];
-  for (var j = 0; j < n; j += step) {
+  for (var j = lo; j <= hi; j += step) {
     values.push(clean[j]);
-    cdf.push((j + 0.5) / n);
+    cdf.push((j + 0.5) / n);  // CDF uses the full N, not trimmed count
   }
-  // Always include the last point
-  if (values[values.length - 1] !== clean[n - 1]) {
-    values.push(clean[n - 1]);
-    cdf.push((n - 0.5) / n);
+  // Always include the last trimmed point
+  if (values.length === 0 || values[values.length - 1] !== clean[hi]) {
+    values.push(clean[hi]);
+    cdf.push((hi + 0.5) / n);
   }
   return { values: values, cdf: cdf };
 }
