@@ -300,8 +300,12 @@ function writeTornadoCharts_(sheet, sim, corrRows, startRow) {
   // corrRows[i] = [inputLabel, rho_output1, rho_output2, ...] (same order as written above)
   if (corrRows.length === 0) return;
 
-  var tornadoTableCol = sim.outputRefs.length + 4;  // to the right of the matrix
-  var colsPerChart = 3;  // label + rho + gap
+  // Section header
+  sheet.getRange(startRow, 1).setValue('Tornado Charts — Inputs sorted by |ρ|').setFontWeight('bold');
+  var tableRow = startRow + 1;
+
+  // Lay out tornado tables side by side (3 cols each: label, rho, gap)
+  var colsPerOutput = 3;
 
   for (var oi = 0; oi < sim.outputRefs.length; oi++) {
     var oref = sim.outputRefs[oi];
@@ -319,19 +323,22 @@ function writeTornadoCharts_(sheet, sim, corrRows, startRow) {
 
     if (pairs.length === 0) continue;
 
-    var tcol = tornadoTableCol + oi * colsPerChart;
+    var tcol = 1 + oi * colsPerOutput;
 
-    // Write table: header + data (sorted lowest |ρ| at top for bar chart orientation)
-    sheet.getRange(1, tcol, 1, 2).setValues([['Input', oLabel + ' ρ']]).setFontWeight('bold');
+    // Table header
+    sheet.getRange(tableRow, tcol, 1, 2).setValues([['Input', oLabel + ' ρ']]).setFontWeight('bold');
+
+    // Data rows: lowest |ρ| at top so the bar chart (which plots bottom-up) puts
+    // the most important input at the top visually.
     var tRows = [];
-    // Reverse so highest |ρ| is at the bottom (bar charts plot bottom-up)
     for (var p = pairs.length - 1; p >= 0; p--) {
       tRows.push([pairs[p].label, pairs[p].rho]);
     }
-    sheet.getRange(2, tcol, tRows.length, 2).setValues(tRows);
+    sheet.getRange(tableRow + 1, tcol, tRows.length, 2).setValues(tRows);
 
-    // Build horizontal bar chart
-    var tRange = sheet.getRange(1, tcol, tRows.length + 1, 2);
+    // Horizontal bar chart, positioned below all the tables
+    var chartRow = tableRow + corrRows.length + 3;
+    var tRange = sheet.getRange(tableRow, tcol, tRows.length + 1, 2);
     var tornadoChart = sheet.newChart()
       .asBarChart()
       .addRange(tRange)
@@ -340,7 +347,7 @@ function writeTornadoCharts_(sheet, sim, corrRows, startRow) {
       .setOption('hAxis', { title: 'Spearman ρ', minValue: -1, maxValue: 1 })
       .setOption('bar', { groupWidth: '80%' })
       .setOption('colors', ['#4393C3'])
-      .setPosition(startRow + oi * 18, 1, 0, 0)
+      .setPosition(chartRow + oi * 18, 1, 0, 0)
       .build();
     sheet.insertChart(tornadoChart);
   }
