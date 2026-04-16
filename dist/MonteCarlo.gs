@@ -1818,6 +1818,80 @@ function skewnessOf_(clean) {
   return (n / ((n - 1) * (n - 2))) * sk;
 }
 
+/**
+ * Convergence diagnostic: split samples into nBatches equal chunks, compute
+ * the mean of each, and return the coefficient of variation (CV) of those
+ * batch means. CV < ~1% suggests convergence; higher means "run more
+ * iterations."
+ *
+ * Returns { batchMeans: [Number,...], overallMean: Number, cv: Number }.
+ * cv is expressed as a fraction (0.01 = 1%).
+ */
+function convergenceDiagnostic_(samples, nBatches) {
+  nBatches = nBatches || 4;
+  var clean = [];
+  for (var i = 0; i < samples.length; i++) {
+    var v = samples[i];
+    if (typeof v === 'number' && !isNaN(v) && isFinite(v)) clean.push(v);
+  }
+  if (clean.length < nBatches) {
+    return { batchMeans: [], overallMean: NaN, cv: NaN };
+  }
+  var batchSize = Math.floor(clean.length / nBatches);
+  var batchMeans = [];
+  var totalSum = 0;
+  for (var b = 0; b < nBatches; b++) {
+    var start = b * batchSize;
+    var end = (b === nBatches - 1) ? clean.length : start + batchSize;
+    var sum = 0;
+    for (var j = start; j < end; j++) sum += clean[j];
+    var bm = sum / (end - start);
+    batchMeans.push(bm);
+    totalSum += sum;
+  }
+  var overallMean = totalSum / clean.length;
+  // SD of batch means
+  var ssq = 0;
+  for (var k = 0; k < nBatches; k++) {
+    var d = batchMeans[k] - overallMean;
+    ssq += d * d;
+  }
+  var sdBatch = nBatches > 1 ? Math.sqrt(ssq / (nBatches - 1)) : 0;
+  var cv = (overallMean !== 0) ? sdBatch / Math.abs(overallMean) : (sdBatch === 0 ? 0 : Infinity);
+  return { batchMeans: batchMeans, overallMean: overallMean, cv: cv };
+}
+
+/**
+ * Build a CDF table from samples: sorted values + continuity-corrected
+ * cumulative probabilities, subsampled to at most maxPoints for charting.
+ *
+ * Returns { values: [...], cdf: [...] }.
+ */
+function buildCDF_(samples, maxPoints) {
+  maxPoints = maxPoints || 200;
+  var clean = [];
+  for (var i = 0; i < samples.length; i++) {
+    var v = samples[i];
+    if (typeof v === 'number' && !isNaN(v) && isFinite(v)) clean.push(v);
+  }
+  if (clean.length === 0) return { values: [], cdf: [] };
+  clean.sort(function (a, b) { return a - b; });
+  var n = clean.length;
+  // Subsample evenly
+  var step = Math.max(1, Math.floor(n / maxPoints));
+  var values = [], cdf = [];
+  for (var j = 0; j < n; j += step) {
+    values.push(clean[j]);
+    cdf.push((j + 0.5) / n);
+  }
+  // Always include the last point
+  if (values[values.length - 1] !== clean[n - 1]) {
+    values.push(clean[n - 1]);
+    cdf.push((n - 0.5) / n);
+  }
+  return { values: values, cdf: cdf };
+}
+
 // =====================================================================
 
 // =====================================================================
@@ -2327,72 +2401,137 @@ function writeResultsSheet_(sheet, sim) {
     ).setFontStyle('italic').setFontColor('#B7791F').setWrap(true);
   }
 
-  // Inputs summary starting a few rows below
-  var inputsStartRow = headerRow + rows.length + 3;
+  // Inputs summary starting a few rows below — includes sampled stats so users
+  // can verify their distributions look right.
+  var inputsStartRow = headerRow + rows.length + (anyErrors ? 4 : 3);
   sheet.getRange(inputsStartRow, 1).setValue('Distribution Inputs').setFontWeight('bold');
-  var inputHeader = ['Input', 'Cell', 'Distribution'];
+  var inputHeader = ['Input', 'Cell', 'Distribution', 'Sample Mean', 'Sample SD', 'Sample P10', 'Sample P90'];
   sheet.getRange(inputsStartRow + 1, 1, 1, inputHeader.length).setValues([inputHeader]).setFontWeight('bold');
   var inputRows = [];
   for (var k = 0; k < sim.inputRefs.length; k++) {
     var iref = sim.inputRefs[k];
-    inputRows.push([sim.labelOf(iref), iref, sim.describeDist(iref)]);
+    var ist = summarize_(sim.inputSamples[iref], sim.iterations);
+    inputRows.push([
+      sim.labelOf(iref), iref, sim.describeDist(iref),
+      safe_(ist.mean), safe_(ist.stdev), safe_(ist.percentiles.p10), safe_(ist.percentiles.p90)
+    ]);
   }
   if (inputRows.length > 0) {
     sheet.getRange(inputsStartRow + 2, 1, inputRows.length, inputHeader.length).setValues(inputRows);
   }
 
-  // Histograms: write bin tables far to the right, then create charts.
-  writeHistogramsAndCharts_(sheet, sim, stats, inputsStartRow + inputRows.length + 4);
+  // Convergence diagnostic: batch means + CV per output
+  var convStartRow = inputsStartRow + inputRows.length + 4;
+  sheet.getRange(convStartRow, 1).setValue('Convergence Diagnostic').setFontWeight('bold');
+  sheet.getRange(convStartRow + 1, 1).setValue(
+    'CV (coefficient of variation of batch means) below ~1% suggests the simulation has converged. ' +
+    'If CV is high, re-run with more iterations.'
+  ).setFontStyle('italic').setWrap(true);
+  var nBatches = 4;
+  var convHeader = ['Output', 'Batch 1', 'Batch 2', 'Batch 3', 'Batch 4', 'CV (%)'];
+  sheet.getRange(convStartRow + 2, 1, 1, convHeader.length).setValues([convHeader]).setFontWeight('bold');
+  var convRows = [];
+  for (var ci = 0; ci < sim.outputRefs.length; ci++) {
+    var cref = sim.outputRefs[ci];
+    var cd = convergenceDiagnostic_(sim.outputSamples[cref], nBatches);
+    var cr = [sim.labelOf(cref)];
+    for (var cb = 0; cb < nBatches; cb++) cr.push(safe_(cd.batchMeans[cb]));
+    cr.push(isFinite(cd.cv) ? cd.cv * 100 : '');
+    convRows.push(cr);
+  }
+  if (convRows.length > 0) {
+    sheet.getRange(convStartRow + 3, 1, convRows.length, convHeader.length).setValues(convRows);
+    // Color the CV column: green < 1%, yellow 1-5%, red > 5%
+    var cvColNum = convHeader.length;
+    for (var cc = 0; cc < convRows.length; cc++) {
+      var cvCell = sheet.getRange(convStartRow + 3 + cc, cvColNum);
+      var cvVal = convRows[cc][cvColNum - 1];
+      if (typeof cvVal === 'number') {
+        if (cvVal < 1) cvCell.setBackground('#D4EDDA');        // green
+        else if (cvVal < 5) cvCell.setBackground('#FFF3CD');   // yellow
+        else cvCell.setBackground('#F8D7DA');                  // red
+      }
+    }
+  }
+
+  // Histograms + CDF charts: write bin tables far to the right, then create charts.
+  writeHistogramsAndCharts_(sheet, sim, stats, convStartRow + convRows.length + 5);
 
   // Autoresize the main columns.
   for (var col = 1; col <= statsHeader.length; col++) sheet.autoResizeColumn(col);
 }
 
 function writeHistogramsAndCharts_(sheet, sim, stats, chartsStartRow) {
-  // Bin tables live in columns Z onwards so they don't collide with the stats.
+  // Bin tables + CDF tables live in columns Z onwards so they don't collide.
+  // Layout per output: [hist midpoint, hist count, gap, cdf value, cdf prob]
   var binStartCol = 26;  // column Z
-  var binTableCols = 2;  // midpoint + count
-  var binTableGap = 1;
+  var colsPerOutput = 6; // 2 hist + 1 gap + 2 CDF + 1 gap
 
   for (var i = 0; i < sim.outputRefs.length; i++) {
     var ref = sim.outputRefs[i];
     var samples = sim.outputSamples[ref];
-    // Pass skewness so histogram_ doesn't recompute it.
     var hist = histogram_(samples, 40, stats[ref].skewness);
 
     if (hist.midpoints.length === 0) continue;
 
-    var col = binStartCol + i * (binTableCols + binTableGap);
+    var hcol = binStartCol + i * colsPerOutput;
 
-    // Header — note the scale so users know what they're looking at.
+    // --- Histogram bin table ---
     var scaleNote = hist.scale === 'log' ? ' (log-spaced bins)' : '';
-    sheet.getRange(1, col, 1, 2).setValues([
+    sheet.getRange(1, hcol, 1, 2).setValues([
       [sim.labelOf(ref) + scaleNote, 'Count']
     ]).setFontWeight('bold');
 
-    // Rows
     var tableRows = [];
     for (var j = 0; j < hist.midpoints.length; j++) {
       tableRows.push([hist.midpoints[j], hist.counts[j]]);
     }
-    sheet.getRange(2, col, tableRows.length, 2).setValues(tableRows);
+    sheet.getRange(2, hcol, tableRows.length, 2).setValues(tableRows);
 
-    // Build chart. Range includes header + data (so the series is auto-labeled).
-    var dataRange = sheet.getRange(1, col, tableRows.length + 1, 2);
+    // Histogram chart
+    var histRange = sheet.getRange(1, hcol, tableRows.length + 1, 2);
     var hAxisOpt = { title: hist.scale === 'log' ? 'Value (log scale)' : 'Value' };
     if (hist.scale === 'log') hAxisOpt.logScale = true;
-    var chart = sheet.newChart()
+    var histChart = sheet.newChart()
       .asColumnChart()
-      .addRange(dataRange)
-      .setOption('title', sim.labelOf(ref) + ' (' + ref + ')' +
-                 (hist.scale === 'log' ? ' — log bins (skew=' + stats[ref].skewness.toFixed(1) + ')' : ''))
+      .addRange(histRange)
+      .setOption('title', sim.labelOf(ref) + ' — Histogram' +
+                 (hist.scale === 'log' ? ' (log bins, skew=' + stats[ref].skewness.toFixed(1) + ')' : ''))
       .setOption('legend', { position: 'none' })
       .setOption('hAxis', hAxisOpt)
       .setOption('vAxis', { title: 'Count' })
       .setOption('bar', { groupWidth: '99%' })
-      .setPosition(chartsStartRow + i * 20, 1, 0, 0)
+      .setPosition(chartsStartRow + i * 40, 1, 0, 0)
       .build();
-    sheet.insertChart(chart);
+    sheet.insertChart(histChart);
+
+    // --- CDF table ---
+    var ccol = hcol + 3;  // gap of 1 column
+    var cdf = buildCDF_(samples, 200);
+    if (cdf.values.length > 0) {
+      sheet.getRange(1, ccol, 1, 2).setValues([['Value', 'P(X ≤ x)']]).setFontWeight('bold');
+      var cdfRows = [];
+      for (var ci = 0; ci < cdf.values.length; ci++) {
+        cdfRows.push([cdf.values[ci], cdf.cdf[ci]]);
+      }
+      sheet.getRange(2, ccol, cdfRows.length, 2).setValues(cdfRows);
+
+      // CDF line chart
+      var cdfRange = sheet.getRange(1, ccol, cdfRows.length + 1, 2);
+      var cdfChart = sheet.newChart()
+        .asLineChart()
+        .addRange(cdfRange)
+        .setOption('title', sim.labelOf(ref) + ' — CDF')
+        .setOption('legend', { position: 'none' })
+        .setOption('hAxis', { title: 'Value' })
+        .setOption('vAxis', { title: 'Cumulative probability', minValue: 0, maxValue: 1 })
+        .setOption('curveType', 'function')
+        .setOption('pointSize', 0)
+        .setOption('lineWidth', 2)
+        .setPosition(chartsStartRow + i * 40 + 19, 1, 0, 0)
+        .build();
+      sheet.insertChart(cdfChart);
+    }
   }
 }
 
@@ -2446,6 +2585,59 @@ function writeSensitivitySheet_(sheet, sim) {
   sheet.setConditionalFormatRules(rules);
 
   sheet.autoResizeColumns(1, header.length);
+
+  // Tornado charts: one horizontal bar chart per output, inputs sorted by |ρ|.
+  writeTornadoCharts_(sheet, sim, rows, 5 + rows.length + 3);
+}
+
+function writeTornadoCharts_(sheet, sim, corrRows, startRow) {
+  // corrRows[i] = [inputLabel, rho_output1, rho_output2, ...] (same order as written above)
+  if (corrRows.length === 0) return;
+
+  var tornadoTableCol = sim.outputRefs.length + 4;  // to the right of the matrix
+  var colsPerChart = 3;  // label + rho + gap
+
+  for (var oi = 0; oi < sim.outputRefs.length; oi++) {
+    var oref = sim.outputRefs[oi];
+    var oLabel = sim.labelOf(oref);
+
+    // Collect (inputLabel, rho) pairs and sort by |rho| descending
+    var pairs = [];
+    for (var ii = 0; ii < corrRows.length; ii++) {
+      var rho = corrRows[ii][oi + 1];
+      if (typeof rho === 'number' && isFinite(rho)) {
+        pairs.push({ label: String(corrRows[ii][0]), rho: rho });
+      }
+    }
+    pairs.sort(function (a, b) { return Math.abs(b.rho) - Math.abs(a.rho); });
+
+    if (pairs.length === 0) continue;
+
+    var tcol = tornadoTableCol + oi * colsPerChart;
+
+    // Write table: header + data (sorted lowest |ρ| at top for bar chart orientation)
+    sheet.getRange(1, tcol, 1, 2).setValues([['Input', oLabel + ' ρ']]).setFontWeight('bold');
+    var tRows = [];
+    // Reverse so highest |ρ| is at the bottom (bar charts plot bottom-up)
+    for (var p = pairs.length - 1; p >= 0; p--) {
+      tRows.push([pairs[p].label, pairs[p].rho]);
+    }
+    sheet.getRange(2, tcol, tRows.length, 2).setValues(tRows);
+
+    // Build horizontal bar chart
+    var tRange = sheet.getRange(1, tcol, tRows.length + 1, 2);
+    var tornadoChart = sheet.newChart()
+      .asBarChart()
+      .addRange(tRange)
+      .setOption('title', 'Input importance: ' + oLabel)
+      .setOption('legend', { position: 'none' })
+      .setOption('hAxis', { title: 'Spearman ρ', minValue: -1, maxValue: 1 })
+      .setOption('bar', { groupWidth: '80%' })
+      .setOption('colors', ['#4393C3'])
+      .setPosition(startRow + oi * 18, 1, 0, 0)
+      .build();
+    sheet.insertChart(tornadoChart);
+  }
 }
 
 // ---------------------------------------------------------------------

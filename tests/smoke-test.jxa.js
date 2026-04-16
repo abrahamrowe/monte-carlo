@@ -53,6 +53,8 @@ var harness = combined + ';\n' +
   '  spearman_: spearman_,' +
   '  pearson_: pearson_,' +
   '  histogram_: histogram_,' +
+  '  convergenceDiagnostic_: convergenceDiagnostic_,' +
+  '  buildCDF_: buildCDF_,' +
   '  readSheetModel_: readSheetModel_,' +
   '  inverseNormalCDF_: inverseNormalCDF_' +
   '};';
@@ -341,6 +343,38 @@ check('IF lazy eval: =IF(B1>0, LN(B1), -999) with negative B1', function () {
   var ast = t.parseFormula_('=IF(A1>0, LN(A1), -999)');
   var v = t.evalAst_(ast, { A1: -5 });
   if (v !== -999) throw new Error('expected -999 (guarded), got ' + JSON.stringify(v));
+});
+
+// 13. Convergence diagnostic
+check('convergenceDiagnostic_ splits into batches with low CV for converged sim', function () {
+  // 10k samples from a narrow Normal → batch means should be very close → CV < 1%
+  var rng = t.mulberry32_(42);
+  var samples = [];
+  for (var i = 0; i < 10000; i++) {
+    // Quick Box-Muller (just for test data — not using the cached sampler)
+    var u1 = rng() || 1e-300, u2 = rng();
+    samples.push(100 + 5 * Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2));
+  }
+  var cd = t.convergenceDiagnostic_(samples, 4);
+  if (cd.batchMeans.length !== 4) throw new Error('expected 4 batch means, got ' + cd.batchMeans.length);
+  if (cd.cv > 0.01) throw new Error('CV should be < 1% for 10k narrow Normal, got ' + (cd.cv * 100).toFixed(2) + '%');
+  near(cd.overallMean, 100, 0.5, 'overall mean');
+});
+
+// 14. CDF builder
+check('buildCDF_ produces sorted ascending probabilities', function () {
+  var cdf = t.buildCDF_([5, 1, 3, 2, 4], 100);
+  if (cdf.values.length !== 5) throw new Error('expected 5 points, got ' + cdf.values.length);
+  // Values should be sorted
+  for (var i = 1; i < cdf.values.length; i++) {
+    if (cdf.values[i] < cdf.values[i - 1]) throw new Error('CDF values not sorted at index ' + i);
+  }
+  // CDF should be monotonically increasing
+  for (var j = 1; j < cdf.cdf.length; j++) {
+    if (cdf.cdf[j] < cdf.cdf[j - 1]) throw new Error('CDF not monotonic at index ' + j);
+  }
+  // Last CDF value should be close to 1
+  if (cdf.cdf[cdf.cdf.length - 1] < 0.5) throw new Error('last CDF value too low');
 });
 
 results.join('\n');

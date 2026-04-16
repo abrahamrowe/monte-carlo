@@ -254,6 +254,80 @@ function skewnessOf_(clean) {
   return (n / ((n - 1) * (n - 2))) * sk;
 }
 
+/**
+ * Convergence diagnostic: split samples into nBatches equal chunks, compute
+ * the mean of each, and return the coefficient of variation (CV) of those
+ * batch means. CV < ~1% suggests convergence; higher means "run more
+ * iterations."
+ *
+ * Returns { batchMeans: [Number,...], overallMean: Number, cv: Number }.
+ * cv is expressed as a fraction (0.01 = 1%).
+ */
+function convergenceDiagnostic_(samples, nBatches) {
+  nBatches = nBatches || 4;
+  var clean = [];
+  for (var i = 0; i < samples.length; i++) {
+    var v = samples[i];
+    if (typeof v === 'number' && !isNaN(v) && isFinite(v)) clean.push(v);
+  }
+  if (clean.length < nBatches) {
+    return { batchMeans: [], overallMean: NaN, cv: NaN };
+  }
+  var batchSize = Math.floor(clean.length / nBatches);
+  var batchMeans = [];
+  var totalSum = 0;
+  for (var b = 0; b < nBatches; b++) {
+    var start = b * batchSize;
+    var end = (b === nBatches - 1) ? clean.length : start + batchSize;
+    var sum = 0;
+    for (var j = start; j < end; j++) sum += clean[j];
+    var bm = sum / (end - start);
+    batchMeans.push(bm);
+    totalSum += sum;
+  }
+  var overallMean = totalSum / clean.length;
+  // SD of batch means
+  var ssq = 0;
+  for (var k = 0; k < nBatches; k++) {
+    var d = batchMeans[k] - overallMean;
+    ssq += d * d;
+  }
+  var sdBatch = nBatches > 1 ? Math.sqrt(ssq / (nBatches - 1)) : 0;
+  var cv = (overallMean !== 0) ? sdBatch / Math.abs(overallMean) : (sdBatch === 0 ? 0 : Infinity);
+  return { batchMeans: batchMeans, overallMean: overallMean, cv: cv };
+}
+
+/**
+ * Build a CDF table from samples: sorted values + continuity-corrected
+ * cumulative probabilities, subsampled to at most maxPoints for charting.
+ *
+ * Returns { values: [...], cdf: [...] }.
+ */
+function buildCDF_(samples, maxPoints) {
+  maxPoints = maxPoints || 200;
+  var clean = [];
+  for (var i = 0; i < samples.length; i++) {
+    var v = samples[i];
+    if (typeof v === 'number' && !isNaN(v) && isFinite(v)) clean.push(v);
+  }
+  if (clean.length === 0) return { values: [], cdf: [] };
+  clean.sort(function (a, b) { return a - b; });
+  var n = clean.length;
+  // Subsample evenly
+  var step = Math.max(1, Math.floor(n / maxPoints));
+  var values = [], cdf = [];
+  for (var j = 0; j < n; j += step) {
+    values.push(clean[j]);
+    cdf.push((j + 0.5) / n);
+  }
+  // Always include the last point
+  if (values[values.length - 1] !== clean[n - 1]) {
+    values.push(clean[n - 1]);
+    cdf.push((n - 0.5) / n);
+  }
+  return { values: values, cdf: cdf };
+}
+
 // =====================================================================
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -263,6 +337,8 @@ if (typeof module !== 'undefined' && module.exports) {
     rank_: rank_,
     pearson_: pearson_,
     spearman_: spearman_,
-    histogram_: histogram_
+    histogram_: histogram_,
+    convergenceDiagnostic_: convergenceDiagnostic_,
+    buildCDF_: buildCDF_
   };
 }
