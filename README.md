@@ -120,9 +120,7 @@ The practical use of the tornado chart: if Price has ρ = 0.85 and Variable Cost
 
 ## Known statistics issues
 
-A statistician would flag these as problems. Most have non-trivial fixes that are out of scope for this version. If you're using this tool for anything load-bearing, I'd recommend reading this section.
-
-### Things you might genuinely be misled by
+If you're using this tool for anything load-bearing, I'd recommend reading this section.
 
 **Mean is conditional on success when Errors is greater than zero.** If some iterations error out (say, `LN(X)` hits a negative `X` once in 200 draws), those iterations are dropped from the mean calculation. What gets reported is `E[output | output is finite]`, not the unconditional expectation. If errors correlate with one tail of the distribution — which they usually do, because they happen when an input went somewhere bad — the reported mean is biased toward the safe tail. The Results sheet shows a warning banner when this happens.
 
@@ -134,33 +132,10 @@ A statistician would flag these as problems. Most have non-trivial fixes that ar
 - `Y = X₁ · X₂` with both `X_i ~ N(0,1)` independent: each ρ ≈ 0, and so is each first-order Sobol index. Neither input explains any variance on its own. But the total-order Sobol indices are both 1, which means each input is essential, with 100% of the variance living in the interaction term. Spearman can't see this, and neither can first-order variance decomposition. You need total-order indices for it.
 - Threshold models like `Y = X₁ if X₂ > 0 else -X₁`: each ρ ≈ 0.
 
-I'd treat the sensitivity sheet as a screening tool, not a real variance decomposition. For a real one, you need Sobol indices, which require different sampling and are out of scope here.
+I'd treat the sensitivity sheet as a screening tool, not a real variance decomposition. 
 
-**Inputs are sampled independently.** The tool doesn't support correlated inputs. Real models often have them (returns and volatility, demand and price, costs and revenues). Sampling them independently understates joint tail risk and produces optimistic "bad outcome" tails. If your inputs should move together, this tool will silently ignore that.
+**Inputs are sampled independently.** The tool doesn't support correlated inputs. Sampling everything independently understates joint tail risk.
 
-### Choices a statistician would push back on
-
-**Vanilla Monte Carlo, no variance reduction.** Convergence is `1/√N`. Quasi-random sequences like Sobol or Halton converge closer to `1/N`. Latin Hypercube gives stratified coverage for free. Antithetic variates halve the variance for symmetric distributions at zero cost. None of these are implemented. If you want to halve your reported `Mean SE`, you currently have to 4x the iteration count.
-
-**Percentile interpolation uses Hyndman-Fan type 7**, which is the Excel/Sheets default. Statisticians often prefer type 8, which is approximately median-unbiased independent of the underlying distribution. The difference is in the third decimal at N=10,000. The `PERCENTILE()` formula function also uses type 7 for Sheets parity, and the summary stats on the MC Results sheet use type 7 for consistency with that.
-
-### Numerical and minor
-
-- The PRNG is mulberry32 (32-bit state, period 2^32). Seeds are mixed through a Murmur3-style finalizer first, so close auto-seeds (like consecutive `Date.now()` values) produce well-separated streams. For runs with more than ~10⁸ total RNG draws (big model × many iterations × many re-runs), the period becomes a real concern, and you'd want to swap in something like xoshiro128++.
-- Normals are generated with the Marsaglia polar method, with the second variate cached. The polar method rejects about 21.5% of candidate pairs (the ones outside the unit disk), so the amortized cost is around 1.27 uniforms per normal, not 1-to-1.
-- Errors during evaluation never throw. They propagate through the formula as `#DIV/0!`, `#NUM!`, or `#VALUE!` sentinels, get recorded as `NaN` in the samples, and increment the output's Errors counter.
-
-### What I'd add if you were using this for real stats (and not forecasting or casual use)
-
-If you're going to extend this, here's where I'd start:
-
-1. **Bootstrap CIs on every percentile.** 1000 resamples is usually enough, and it's fast in JS because it's pure ranking.
-2. **Sobol sensitivity indices with Saltelli sampling.** You want both first-order and total-order, so you pick up the interaction effects that Spearman and first-order variance decomposition both miss.
-3. **Latin Hypercube plus antithetic variates.** Free 2–4x variance reduction.
-4. **Correlated input support** via a Cholesky factor on a user-supplied correlation matrix. Iman-Conover preserves the marginals.
-5. **Handle failure regions explicitly**, not by resampling them. Resampling until you hit N just gets you a bigger sample from the success region — the reported mean is still `E[Y | Y is finite]`, not the unconditional `E[Y]`. To actually fix the bias, you need imputation (assign some value to the failure region, like 0 or a modeled extreme) or bounds (report `Mean_lower` assuming failures equal the min observed and `Mean_upper` assuming they equal the max observed), so the user sees the size of the unknown.
-
-For forecasting and casual use, I wouldn't worry about any of this. The tool as-is is fine for that.
 
 ## Menu items
 
@@ -179,7 +154,7 @@ On a typical model with around 50 cells and 20 formula cells:
 |     10,000 | ~20–30 s         |
 |    100,000 | ~2–3 min         |
 
-Google Apps Script has a 6-minute per-invocation execution cap. At around 100 formula cells and 50,000 iterations you start to approach it. The custom-iteration dialog accepts up to 200,000.
+Google Apps Script has a 6-minute per-invocation execution cap. At around 100 formula cells and 50,000 iterations you might run into this limit. The custom-iteration dialog accepts up to 200,000.
 
 ## Test-in-Sheets checklist
 
