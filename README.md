@@ -6,10 +6,8 @@ A few things to know up front:
 
 - It runs 10,000 iterations in around 30 seconds on a typical model.
 - Everything happens inside the sheet. There's no server, no login beyond the OAuth prompt the first time you run it, and no data leaves the spreadsheet.
-- The formula evaluator is written in JavaScript, so the sheet doesn't have to recalculate thousands of times. That's what makes it fast enough to actually use.
-- The PRNG is seedable, and the results sheet reports the Monte Carlo standard error of each mean alongside the mean itself.
+- The PRNG is seedable, and should replicate results if you use the same inputs, formulas, and seed.
 
-There's a section further down called "Known statistics issues" that I'd recommend reading if you're using this for anything that matters. The tool makes some simplifying assumptions that can mislead you if you're not aware of them.
 
 ## Install
 
