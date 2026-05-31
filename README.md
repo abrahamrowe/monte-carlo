@@ -16,10 +16,20 @@ A few things to know up front:
 3. Delete whatever is in `Code.gs` by default.
 4. Paste the contents of [`dist/MonteCarlo.gs`](dist/MonteCarlo.gs) in.
 5. Save the file (⌘S or Ctrl+S).
-6. Reload the Google Sheet.
-7. A new "Monte Carlo" menu should appear in the toolbar.
+6. Set up the manifest so OAuth asks for the narrowest possible scope:
+   - In the Apps Script editor, click the ⚙ gear icon (Project Settings) in the left sidebar.
+   - Check **"Show 'appsscript.json' manifest file in editor"**.
+   - Back in the file list, open the new `appsscript.json` and replace its contents with [`src/appsscript.json`](src/appsscript.json) from this repo (it specifies `spreadsheets.currentonly` and `script.container.ui`).
+   - Save.
+7. Reload the Google Sheet.
+8. A new "Monte Carlo" menu should appear in the toolbar.
 
-The first time you run the simulation, Google will ask for OAuth consent. The manifest asks for the narrowest possible scope (`spreadsheets.currentonly` plus `script.container.ui` for the menu and dialogs), so the consent screen will say something like "access to this spreadsheet only."
+The first time you run the simulation, Google will ask for OAuth consent. With the manifest in place, the consent screen will say something like "access to this spreadsheet only" instead of asking for access to all your sheets.
+
+If you skipped the manifest step and already granted the broader scope, you can clean it up:
+- Visit <https://myaccount.google.com/permissions>, find the script's entry, and click **Remove Access**.
+- Update the manifest as described above.
+- Re-run the simulation — you'll get a fresh consent prompt with the narrower scope.
 
 ## Sheet format
 
