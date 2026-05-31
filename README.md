@@ -16,7 +16,7 @@ A few things to know up front:
 3. Delete whatever is in `Code.gs` by default.
 4. Paste the contents of [`dist/MonteCarlo.gs`](dist/MonteCarlo.gs) in.
 5. Save the file (⌘S or Ctrl+S).
-6. Set up the manifest so OAuth asks for the narrowest possible scope:
+6. **IMPORTANT:** Set up the manifest so OAuth asks for the narrowest possible scope, as otherwise this tool technically has access to all your sheets (Google doesn't easily let me limit this):
    - In the Apps Script editor, click the ⚙ gear icon (Project Settings) in the left sidebar.
    - Check **"Show 'appsscript.json' manifest file in editor"**.
    - Back in the file list, open the new `appsscript.json` and replace its contents with [`src/appsscript.json`](src/appsscript.json) from this repo (it specifies `spreadsheets.currentonly` and `script.container.ui`).
