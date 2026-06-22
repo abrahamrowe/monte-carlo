@@ -55,7 +55,32 @@ function runSimulationCore_(model, options) {
   }
 
   var rng = mulberry32_(seed);
-  resetNormalCache_();  // ensure no stale cache from a previous run leaks in
+
+  // Latin Hypercube stratification: for each input, pre-generate one
+  // uniform per iteration as (stratum + jitter) / N, then shuffle so
+  // strata aren't correlated across inputs. Every marginal is sampled
+  // near-perfectly, which substantially reduces Monte Carlo error for
+  // the same iteration count. Falls back to plain IID draws when
+  // N × inputs would use too much memory.
+  var nDists = plan.distributionRefs.length;
+  var useLHS = iterations * nDists <= 2000000;
+  var lhsStreams = null;
+  if (useLHS) {
+    lhsStreams = {};
+    for (var ld = 0; ld < nDists; ld++) {
+      var stream = new Float64Array(iterations);
+      for (var li = 0; li < iterations; li++) {
+        var jitter = rng();
+        if (jitter <= 0) jitter = 1e-12;
+        stream[li] = (li + jitter) / iterations;
+      }
+      for (var ls = iterations - 1; ls > 0; ls--) {  // Fisher-Yates
+        var lj = Math.floor(rng() * (ls + 1));
+        var tmp = stream[ls]; stream[ls] = stream[lj]; stream[lj] = tmp;
+      }
+      lhsStreams[plan.distributionRefs[ld]] = stream;
+    }
+  }
 
   // Error counts per output.
   var errorCounts = {};
@@ -67,7 +92,9 @@ function runSimulationCore_(model, options) {
     // Sample all distributions for this iteration.
     for (var di = 0; di < plan.distributionRefs.length; di++) {
       var dr = plan.distributionRefs[di];
-      var v = samplers[dr].sample(rng);
+      var v = useLHS
+        ? samplers[dr].fromU(lhsStreams[dr][iter])
+        : samplers[dr].sample(rng);
       state[dr] = v;
       inputSamples[dr][iter] = v;
     }
@@ -119,6 +146,7 @@ function runSimulationCore_(model, options) {
   return {
     iterations: iterations,
     seed: seed,
+    samplingMethod: useLHS ? 'Latin Hypercube' : 'IID',
     elapsedMs: elapsedMs,
     outputSamples: outputSamples,
     inputSamples: inputSamples,

@@ -55,6 +55,7 @@ var harness = combined + ';\n' +
   '  histogram_: histogram_,' +
   '  convergenceDiagnostic_: convergenceDiagnostic_,' +
   '  buildCDF_: buildCDF_,' +
+  '  percentileCIs_: percentileCIs_,' +
   '  readSheetModel_: readSheetModel_,' +
   '  inverseNormalCDF_: inverseNormalCDF_' +
   '};';
@@ -375,6 +376,75 @@ check('buildCDF_ produces sorted ascending probabilities', function () {
   }
   // Last CDF value should be close to 1
   if (cdf.cdf[cdf.cdf.length - 1] < 0.5) throw new Error('last CDF value too low');
+});
+
+// 15. Inverse-CDF sampling: fromU is exact at known quantiles
+check('sampler fromU: Uniform midpoint and Normal median exact', function () {
+  var us = t.buildSampler_({ type: 'uniform', mode: 'params', values: [10, 20], cellRef: 'A1' });
+  if (us.fromU(0.5) !== 15) throw new Error('Uniform fromU(0.5) should be 15, got ' + us.fromU(0.5));
+  if (us.fromU(0.25) !== 12.5) throw new Error('Uniform fromU(0.25) should be 12.5');
+  var ns = t.buildSampler_({ type: 'normal', mode: 'params', values: [7, 2], cellRef: 'A1' });
+  near(ns.fromU(0.5), 7, 1e-9, 'Normal fromU(0.5) = mean');
+  near(ns.fromU(0.9), 7 + 2 * 1.2816, 1e-3, 'Normal fromU(0.9)');
+});
+
+// 16. Latin Hypercube: marginals are near-exact (far tighter than IID could be)
+check('LHS: Uniform input marginals nearly exact at N=2000', function () {
+  var ast = t.parseFormula_('=A1');
+  var model = {
+    cells: {
+      A1: { kind: 'distribution', distSpec: { type: 'uniform', mode: 'params', values: [0, 10], cellRef: 'A1' } },
+      A2: { kind: 'formula', ast: ast, isOutput: true, label: 'u' }
+    }
+  };
+  var r = t.runSimulationCore_(model, { iterations: 2000, seed: 9 });
+  if (r.samplingMethod !== 'Latin Hypercube') throw new Error('expected LHS, got ' + r.samplingMethod);
+  var s = t.summarize_(r.inputSamples.A1, r.iterations);
+  // IID at N=2000 gives mean SE ≈ 0.065; LHS stratification should be ~100x tighter.
+  near(s.mean, 5, 0.01, 'LHS mean');
+  near(s.percentiles.p10, 1, 0.05, 'LHS p10');
+  near(s.percentiles.p90, 9, 0.05, 'LHS p90');
+});
+
+// 17. LHS reproducibility: same seed → identical output stream
+check('LHS: same seed reproduces exactly', function () {
+  var ast = t.parseFormula_('=A1+A2');
+  function model() {
+    return {
+      cells: {
+        A1: { kind: 'distribution', distSpec: { type: 'normal', mode: 'params', values: [0, 1], cellRef: 'A1' } },
+        A2: { kind: 'distribution', distSpec: { type: 'lognormal', mode: 'params', values: [0, 0.5], cellRef: 'A2' } },
+        A3: { kind: 'formula', ast: ast, isOutput: true }
+      }
+    };
+  }
+  var a = t.runSimulationCore_(model(), { iterations: 200, seed: 77 });
+  var b = t.runSimulationCore_(model(), { iterations: 200, seed: 77 });
+  for (var i = 0; i < 200; i++) {
+    if (a.outputSamples.A3[i] !== b.outputSamples.A3[i]) {
+      throw new Error('mismatch at iteration ' + i);
+    }
+  }
+});
+
+// 18. Percentile CIs via order statistics
+check('percentileCIs_ brackets the true quantiles', function () {
+  // 10k known values: 1..10000. True median = 5000.5, true P95 = 9500.5.
+  var samples = [];
+  for (var i = 1; i <= 10000; i++) samples.push(i);
+  var cis = t.percentileCIs_(samples, [0.5, 0.95]);
+  if (!(cis.p50.lo <= 5000.5 && 5000.5 <= cis.p50.hi)) {
+    throw new Error('P50 CI [' + cis.p50.lo + ', ' + cis.p50.hi + '] misses true median');
+  }
+  if (!(cis.p95.lo <= 9500.5 && 9500.5 <= cis.p95.hi)) {
+    throw new Error('P95 CI [' + cis.p95.lo + ', ' + cis.p95.hi + '] misses true P95');
+  }
+  // CI width for q=0.5, n=10k: ±1.96·50 indices ≈ 196 values wide. Sanity-band it.
+  var w50 = cis.p50.hi - cis.p50.lo;
+  if (w50 < 100 || w50 > 400) throw new Error('P50 CI width implausible: ' + w50);
+  // NaN-heavy input → blank CIs, not garbage
+  var ciNaN = t.percentileCIs_([NaN, NaN], [0.5]);
+  if (!isNaN(ciNaN.p50.lo)) throw new Error('expected NaN CI for all-NaN input');
 });
 
 results.join('\n');

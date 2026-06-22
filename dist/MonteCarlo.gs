@@ -102,57 +102,45 @@ function inverseNormalCDF_(p) {
 // Samplers
 // =====================================================================
 
+// Every distribution samples via an inverse-CDF transform of a SINGLE
+// uniform. One uniform per draw keeps the RNG stream aligned across
+// inputs and makes Latin Hypercube stratification correct — rejection
+// methods (Marsaglia polar, ziggurat) consume a variable number of
+// uniforms per draw, which would scramble a stratified stream.
+
+/** Clamp a uniform into the open interval (0,1) so inverse CDFs stay finite. */
+function clampUnit_(u) {
+  if (!(u > 0)) return 1e-15;          // also catches NaN
+  if (u >= 1) return 1 - 1e-15;
+  return u;
+}
+
 function sampleUniform_(rng, a, b) {
   return a + (b - a) * rng();
 }
 
-/**
- * Marsaglia polar method for generating standard normal samples.
- *
- * Each iteration of the polar loop produces TWO independent N(0,1) draws
- * from two uniforms. We return one and stash the other in a per-rng cache
- * so the next call to sampleNormal_ on the same rng is essentially free.
- *
- * Marsaglia polar is preferred over trig-form Box-Muller because it has
- * better numerical behavior at the tails (no cos/sin amplification of
- * floating-point error when one uniform is small).
- */
-var _normalCache_ = { rng: null, value: null };
-
-function resetNormalCache_() {
-  _normalCache_.rng = null;
-  _normalCache_.value = null;
+function normalFromU_(u, mean, sd) {
+  return mean + sd * inverseNormalCDF_(clampUnit_(u));
 }
 
 function sampleNormal_(rng, mean, sd) {
-  if (_normalCache_.rng === rng && _normalCache_.value !== null) {
-    var z = _normalCache_.value;
-    _normalCache_.value = null;
-    return mean + sd * z;
-  }
-  var u, v, s;
-  do {
-    u = 2 * rng() - 1;
-    v = 2 * rng() - 1;
-    s = u * u + v * v;
-  } while (s >= 1 || s === 0);
-  var f = Math.sqrt(-2 * Math.log(s) / s);
-  _normalCache_.rng = rng;
-  _normalCache_.value = v * f;
-  return mean + sd * (u * f);
+  return normalFromU_(rng(), mean, sd);
 }
 
 function sampleLogNormal_(rng, mu, sigma) {
-  return Math.exp(sampleNormal_(rng, mu, sigma));
+  return Math.exp(normalFromU_(rng(), mu, sigma));
+}
+
+function discreteFromU_(u, values, cumWeights) {
+  // cumWeights is a pre-normalized cumulative distribution (ends at 1).
+  for (var i = 0; i < cumWeights.length; i++) {
+    if (u < cumWeights[i]) return values[i];
+  }
+  return values[values.length - 1];
 }
 
 function sampleDiscrete_(rng, values, cumWeights) {
-  // cumWeights is pre-normalized cumulative distribution (ends at 1).
-  var r = rng();
-  for (var i = 0; i < cumWeights.length; i++) {
-    if (r < cumWeights[i]) return values[i];
-  }
-  return values[values.length - 1];
+  return discreteFromU_(rng(), values, cumWeights);
 }
 
 // =====================================================================
@@ -221,7 +209,8 @@ function buildSampler_(spec) {
       throw new Error(cellRef + ': Normal sd must be positive, got ' + np.sd);
     }
     return {
-      sample: function (rng) { return sampleNormal_(rng, np.mean, np.sd); },
+      fromU: function (u) { return normalFromU_(u, np.mean, np.sd); },
+      sample: function (rng) { return normalFromU_(rng(), np.mean, np.sd); },
       describe: function () { return 'Normal(mean=' + np.mean.toFixed(4) + ', sd=' + np.sd.toFixed(4) + ')'; }
     };
   }
@@ -235,7 +224,8 @@ function buildSampler_(spec) {
       throw new Error(cellRef + ': LogNormal sigma must be positive, got ' + lp.sigma);
     }
     return {
-      sample: function (rng) { return sampleLogNormal_(rng, lp.mu, lp.sigma); },
+      fromU: function (u) { return Math.exp(normalFromU_(u, lp.mu, lp.sigma)); },
+      sample: function (rng) { return Math.exp(normalFromU_(rng(), lp.mu, lp.sigma)); },
       describe: function () { return 'LogNormal(mu=' + lp.mu.toFixed(4) + ', sigma=' + lp.sigma.toFixed(4) + ')'; }
     };
   }
@@ -249,7 +239,8 @@ function buildSampler_(spec) {
       throw new Error(cellRef + ': Uniform b must exceed a, got a=' + up.a + ', b=' + up.b);
     }
     return {
-      sample: function (rng) { return sampleUniform_(rng, up.a, up.b); },
+      fromU: function (u) { return up.a + (up.b - up.a) * u; },
+      sample: function (rng) { return up.a + (up.b - up.a) * rng(); },
       describe: function () { return 'Uniform(' + up.a.toFixed(4) + ', ' + up.b.toFixed(4) + ')'; }
     };
   }
@@ -275,7 +266,8 @@ function buildSampler_(spec) {
     }
     cum[cum.length - 1] = 1;
     return {
-      sample: function (rng) { return sampleDiscrete_(rng, xs, cum); },
+      fromU: function (u) { return discreteFromU_(u, xs, cum); },
+      sample: function (rng) { return discreteFromU_(rng(), xs, cum); },
       describe: function () { return 'Discrete(' + xs.length + ' outcomes)'; }
     };
   }
@@ -1905,6 +1897,47 @@ function buildCDF_(samples, maxPoints) {
   return { values: values, cdf: cdf };
 }
 
+/**
+ * Distribution-free confidence intervals for percentiles, via order
+ * statistics. The count of samples below the true q-quantile is
+ * Binomial(n, q); the normal approximation gives index bounds
+ * k ± z·√(n·q·(1−q)) around k = n·q. Mapping those indices into the
+ * sorted sample yields a ~95% CI with no assumptions about the
+ * underlying distribution. O(n log n) total — one sort, then O(1)
+ * per percentile (vs. a bootstrap's B re-sorts).
+ *
+ * qs is an array of quantiles in (0,1). Returns a map keyed 'p5',
+ * 'p50', etc.: { p50: { lo, hi }, ... }. Non-finite samples are
+ * dropped first, so the CIs are over the same "effective N" as the
+ * rest of the summary stats.
+ */
+function percentileCIs_(samples, qs) {
+  var z = 1.959963984540054;  // two-sided 95%
+  var clean = [];
+  for (var i = 0; i < samples.length; i++) {
+    var v = samples[i];
+    if (typeof v === 'number' && !isNaN(v) && isFinite(v)) clean.push(v);
+  }
+  var out = {};
+  var n = clean.length;
+  if (n < 3) {
+    for (var q0 = 0; q0 < qs.length; q0++) {
+      out['p' + Math.round(qs[q0] * 100)] = { lo: NaN, hi: NaN };
+    }
+    return out;
+  }
+  clean.sort(function (a, b) { return a - b; });
+  for (var j = 0; j < qs.length; j++) {
+    var q = qs[j];
+    var k = n * q;
+    var half = z * Math.sqrt(n * q * (1 - q));
+    var loIdx = Math.max(0, Math.floor(k - half));
+    var hiIdx = Math.min(n - 1, Math.ceil(k + half));
+    out['p' + Math.round(q * 100)] = { lo: clean[loIdx], hi: clean[hiIdx] };
+  }
+  return out;
+}
+
 // =====================================================================
 
 // =====================================================================
@@ -1968,7 +2001,32 @@ function runSimulationCore_(model, options) {
   }
 
   var rng = mulberry32_(seed);
-  resetNormalCache_();  // ensure no stale cache from a previous run leaks in
+
+  // Latin Hypercube stratification: for each input, pre-generate one
+  // uniform per iteration as (stratum + jitter) / N, then shuffle so
+  // strata aren't correlated across inputs. Every marginal is sampled
+  // near-perfectly, which substantially reduces Monte Carlo error for
+  // the same iteration count. Falls back to plain IID draws when
+  // N × inputs would use too much memory.
+  var nDists = plan.distributionRefs.length;
+  var useLHS = iterations * nDists <= 2000000;
+  var lhsStreams = null;
+  if (useLHS) {
+    lhsStreams = {};
+    for (var ld = 0; ld < nDists; ld++) {
+      var stream = new Float64Array(iterations);
+      for (var li = 0; li < iterations; li++) {
+        var jitter = rng();
+        if (jitter <= 0) jitter = 1e-12;
+        stream[li] = (li + jitter) / iterations;
+      }
+      for (var ls = iterations - 1; ls > 0; ls--) {  // Fisher-Yates
+        var lj = Math.floor(rng() * (ls + 1));
+        var tmp = stream[ls]; stream[ls] = stream[lj]; stream[lj] = tmp;
+      }
+      lhsStreams[plan.distributionRefs[ld]] = stream;
+    }
+  }
 
   // Error counts per output.
   var errorCounts = {};
@@ -1980,7 +2038,9 @@ function runSimulationCore_(model, options) {
     // Sample all distributions for this iteration.
     for (var di = 0; di < plan.distributionRefs.length; di++) {
       var dr = plan.distributionRefs[di];
-      var v = samplers[dr].sample(rng);
+      var v = useLHS
+        ? samplers[dr].fromU(lhsStreams[dr][iter])
+        : samplers[dr].sample(rng);
       state[dr] = v;
       inputSamples[dr][iter] = v;
     }
@@ -2032,6 +2092,7 @@ function runSimulationCore_(model, options) {
   return {
     iterations: iterations,
     seed: seed,
+    samplingMethod: useLHS ? 'Latin Hypercube' : 'IID',
     elapsedMs: elapsedMs,
     outputSamples: outputSamples,
     inputSamples: inputSamples,
@@ -2329,6 +2390,12 @@ function safe_(v) {
   return (typeof v === 'number' && !isFinite(v)) ? '' : v;
 }
 
+/** Render a {lo, hi} percentile CI as a compact "lo to hi" string (4 sig figs). */
+function formatCI_(ci) {
+  if (!ci || !isFinite(ci.lo) || !isFinite(ci.hi)) return '';
+  return String(Number(ci.lo.toPrecision(4))) + ' to ' + String(Number(ci.hi.toPrecision(4)));
+}
+
 function writeAllResults_(spreadsheet, simResult) {
   var resultsSheet = getOrResetSheet_(spreadsheet, MC_SHEET_RESULTS);
   var sensSheet    = getOrResetSheet_(spreadsheet, MC_SHEET_SENSITIVITY);
@@ -2367,20 +2434,22 @@ function writeResultsSheet_(sheet, sim) {
   sheet.getRange(1, 1).setValue('Monte Carlo Simulation Results');
   sheet.getRange(1, 1).setFontWeight('bold').setFontSize(14);
 
-  // Row 2-3: run metadata
+  // Run metadata
   sheet.getRange(2, 1, 1, 2).setValues([['Run at', new Date()]]);
   sheet.getRange(3, 1, 1, 2).setValues([['Iterations', sim.iterations]]);
   sheet.getRange(4, 1, 1, 2).setValues([['Seed', sim.seed]]);
   sheet.getRange(5, 1, 1, 2).setValues([['Elapsed (ms)', sim.elapsedMs]]);
+  sheet.getRange(6, 1, 1, 2).setValues([['Sampling', sim.samplingMethod +
+    (sim.samplingMethod === 'Latin Hypercube' ? ' (stratified; Mean SE is conservative)' : '')]]);
 
-  // Output stats table starting at row 7
+  // Output stats table
   // "Mean SE" is the Monte Carlo standard error of the mean (stdev/√n_eff).
   // ±1.96·MeanSE gives a ~95% CI around the reported Mean.
   // "Eff N" is the count of finite samples (totalIterations - errors).
   var statsHeader = ['Output', 'Cell', 'Mean', 'Mean SE', 'Median', 'StDev', 'Min',
                      'P1', 'P5', 'P10', 'P25', 'P50', 'P75', 'P90', 'P95', 'P99',
                      'Max', 'Eff N', 'Errors'];
-  var headerRow = 7;
+  var headerRow = 8;
   sheet.getRange(headerRow, 1, 1, statsHeader.length).setValues([statsHeader]).setFontWeight('bold');
 
   var rows = [];
@@ -2467,8 +2536,32 @@ function writeResultsSheet_(sheet, sim) {
     }
   }
 
+  // Percentile uncertainty: distribution-free 95% CIs from order statistics.
+  var ciStartRow = convStartRow + convRows.length + 5;
+  sheet.getRange(ciStartRow, 1).setValue('Percentile Uncertainty (95% CI)').setFontWeight('bold');
+  sheet.getRange(ciStartRow + 1, 1).setValue(
+    'Distribution-free confidence intervals from order statistics — how much each reported ' +
+    'percentile could move under re-simulation. Tail percentiles are less certain than central ones.'
+  ).setFontStyle('italic').setWrap(true);
+  var ciQs = [0.05, 0.10, 0.50, 0.90, 0.95, 0.99];
+  var ciHeader = ['Output', 'P5', 'P10', 'P50', 'P90', 'P95', 'P99'];
+  sheet.getRange(ciStartRow + 2, 1, 1, ciHeader.length).setValues([ciHeader]).setFontWeight('bold');
+  var ciRows = [];
+  for (var qi = 0; qi < sim.outputRefs.length; qi++) {
+    var qref = sim.outputRefs[qi];
+    var cis = percentileCIs_(sim.outputSamples[qref], ciQs);
+    ciRows.push([
+      sim.labelOf(qref),
+      formatCI_(cis.p5), formatCI_(cis.p10), formatCI_(cis.p50),
+      formatCI_(cis.p90), formatCI_(cis.p95), formatCI_(cis.p99)
+    ]);
+  }
+  if (ciRows.length > 0) {
+    sheet.getRange(ciStartRow + 3, 1, ciRows.length, ciHeader.length).setValues(ciRows);
+  }
+
   // Histograms + CDF charts: write bin tables far to the right, then create charts.
-  writeHistogramsAndCharts_(sheet, sim, stats, convStartRow + convRows.length + 5);
+  writeHistogramsAndCharts_(sheet, sim, stats, ciStartRow + ciRows.length + 5);
 
   // Autoresize the main columns.
   for (var col = 1; col <= statsHeader.length; col++) sheet.autoResizeColumn(col);
@@ -2850,7 +2943,10 @@ function showMonteCarloHelp() {
       'LOG10, POWER, MOD, ROUND, CEILING, FLOOR, INT, TRUNC, PI.</p>' +
     '<p><b>Results</b> land on three new sheets: <i>MC Results</i>, ' +
       '<i>MC Sensitivity</i>, and <i>MC Samples</i>. The Results sheet shows Monte Carlo standard ' +
-      'errors next to each Mean (±1.96·SE ≈ 95% CI) and an Effective N column when iterations error out.</p>' +
+      'errors next to each Mean (±1.96·SE ≈ 95% CI), 95% confidence intervals on the percentiles, ' +
+      'and an Effective N column when iterations error out.</p>' +
+    '<p><b>Sampling</b> uses Latin Hypercube stratification (seeded and reproducible), which ' +
+      'converges faster than plain Monte Carlo at the same iteration count.</p>' +
     '</div>'
   ).setWidth(700).setHeight(520);
   ui.showModalDialog(html, 'Monte Carlo — Help');

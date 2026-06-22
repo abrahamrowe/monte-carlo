@@ -147,7 +147,10 @@ function showMonteCarloHelp() {
       'LOG10, POWER, MOD, ROUND, CEILING, FLOOR, INT, TRUNC, PI.</p>' +
     '<p><b>Results</b> land on three new sheets: <i>MC Results</i>, ' +
       '<i>MC Sensitivity</i>, and <i>MC Samples</i>. The Results sheet shows Monte Carlo standard ' +
-      'errors next to each Mean (±1.96·SE ≈ 95% CI) and an Effective N column when iterations error out.</p>' +
+      'errors next to each Mean (±1.96·SE ≈ 95% CI), 95% confidence intervals on the percentiles, ' +
+      'and an Effective N column when iterations error out.</p>' +
+    '<p><b>Sampling</b> uses Latin Hypercube stratification (seeded and reproducible), which ' +
+      'converges faster than plain Monte Carlo at the same iteration count.</p>' +
     '</div>'
   ).setWidth(700).setHeight(520);
   ui.showModalDialog(html, 'Monte Carlo — Help');

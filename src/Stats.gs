@@ -341,6 +341,47 @@ function buildCDF_(samples, maxPoints) {
   return { values: values, cdf: cdf };
 }
 
+/**
+ * Distribution-free confidence intervals for percentiles, via order
+ * statistics. The count of samples below the true q-quantile is
+ * Binomial(n, q); the normal approximation gives index bounds
+ * k ± z·√(n·q·(1−q)) around k = n·q. Mapping those indices into the
+ * sorted sample yields a ~95% CI with no assumptions about the
+ * underlying distribution. O(n log n) total — one sort, then O(1)
+ * per percentile (vs. a bootstrap's B re-sorts).
+ *
+ * qs is an array of quantiles in (0,1). Returns a map keyed 'p5',
+ * 'p50', etc.: { p50: { lo, hi }, ... }. Non-finite samples are
+ * dropped first, so the CIs are over the same "effective N" as the
+ * rest of the summary stats.
+ */
+function percentileCIs_(samples, qs) {
+  var z = 1.959963984540054;  // two-sided 95%
+  var clean = [];
+  for (var i = 0; i < samples.length; i++) {
+    var v = samples[i];
+    if (typeof v === 'number' && !isNaN(v) && isFinite(v)) clean.push(v);
+  }
+  var out = {};
+  var n = clean.length;
+  if (n < 3) {
+    for (var q0 = 0; q0 < qs.length; q0++) {
+      out['p' + Math.round(qs[q0] * 100)] = { lo: NaN, hi: NaN };
+    }
+    return out;
+  }
+  clean.sort(function (a, b) { return a - b; });
+  for (var j = 0; j < qs.length; j++) {
+    var q = qs[j];
+    var k = n * q;
+    var half = z * Math.sqrt(n * q * (1 - q));
+    var loIdx = Math.max(0, Math.floor(k - half));
+    var hiIdx = Math.min(n - 1, Math.ceil(k + half));
+    out['p' + Math.round(q * 100)] = { lo: clean[loIdx], hi: clean[hiIdx] };
+  }
+  return out;
+}
+
 // =====================================================================
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -352,6 +393,7 @@ if (typeof module !== 'undefined' && module.exports) {
     spearman_: spearman_,
     histogram_: histogram_,
     convergenceDiagnostic_: convergenceDiagnostic_,
-    buildCDF_: buildCDF_
+    buildCDF_: buildCDF_,
+    percentileCIs_: percentileCIs_
   };
 }

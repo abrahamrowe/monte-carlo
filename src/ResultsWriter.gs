@@ -22,6 +22,12 @@ function safe_(v) {
   return (typeof v === 'number' && !isFinite(v)) ? '' : v;
 }
 
+/** Render a {lo, hi} percentile CI as a compact "lo to hi" string (4 sig figs). */
+function formatCI_(ci) {
+  if (!ci || !isFinite(ci.lo) || !isFinite(ci.hi)) return '';
+  return String(Number(ci.lo.toPrecision(4))) + ' to ' + String(Number(ci.hi.toPrecision(4)));
+}
+
 function writeAllResults_(spreadsheet, simResult) {
   var resultsSheet = getOrResetSheet_(spreadsheet, MC_SHEET_RESULTS);
   var sensSheet    = getOrResetSheet_(spreadsheet, MC_SHEET_SENSITIVITY);
@@ -60,20 +66,22 @@ function writeResultsSheet_(sheet, sim) {
   sheet.getRange(1, 1).setValue('Monte Carlo Simulation Results');
   sheet.getRange(1, 1).setFontWeight('bold').setFontSize(14);
 
-  // Row 2-3: run metadata
+  // Run metadata
   sheet.getRange(2, 1, 1, 2).setValues([['Run at', new Date()]]);
   sheet.getRange(3, 1, 1, 2).setValues([['Iterations', sim.iterations]]);
   sheet.getRange(4, 1, 1, 2).setValues([['Seed', sim.seed]]);
   sheet.getRange(5, 1, 1, 2).setValues([['Elapsed (ms)', sim.elapsedMs]]);
+  sheet.getRange(6, 1, 1, 2).setValues([['Sampling', sim.samplingMethod +
+    (sim.samplingMethod === 'Latin Hypercube' ? ' (stratified; Mean SE is conservative)' : '')]]);
 
-  // Output stats table starting at row 7
+  // Output stats table
   // "Mean SE" is the Monte Carlo standard error of the mean (stdev/√n_eff).
   // ±1.96·MeanSE gives a ~95% CI around the reported Mean.
   // "Eff N" is the count of finite samples (totalIterations - errors).
   var statsHeader = ['Output', 'Cell', 'Mean', 'Mean SE', 'Median', 'StDev', 'Min',
                      'P1', 'P5', 'P10', 'P25', 'P50', 'P75', 'P90', 'P95', 'P99',
                      'Max', 'Eff N', 'Errors'];
-  var headerRow = 7;
+  var headerRow = 8;
   sheet.getRange(headerRow, 1, 1, statsHeader.length).setValues([statsHeader]).setFontWeight('bold');
 
   var rows = [];
@@ -160,8 +168,32 @@ function writeResultsSheet_(sheet, sim) {
     }
   }
 
+  // Percentile uncertainty: distribution-free 95% CIs from order statistics.
+  var ciStartRow = convStartRow + convRows.length + 5;
+  sheet.getRange(ciStartRow, 1).setValue('Percentile Uncertainty (95% CI)').setFontWeight('bold');
+  sheet.getRange(ciStartRow + 1, 1).setValue(
+    'Distribution-free confidence intervals from order statistics — how much each reported ' +
+    'percentile could move under re-simulation. Tail percentiles are less certain than central ones.'
+  ).setFontStyle('italic').setWrap(true);
+  var ciQs = [0.05, 0.10, 0.50, 0.90, 0.95, 0.99];
+  var ciHeader = ['Output', 'P5', 'P10', 'P50', 'P90', 'P95', 'P99'];
+  sheet.getRange(ciStartRow + 2, 1, 1, ciHeader.length).setValues([ciHeader]).setFontWeight('bold');
+  var ciRows = [];
+  for (var qi = 0; qi < sim.outputRefs.length; qi++) {
+    var qref = sim.outputRefs[qi];
+    var cis = percentileCIs_(sim.outputSamples[qref], ciQs);
+    ciRows.push([
+      sim.labelOf(qref),
+      formatCI_(cis.p5), formatCI_(cis.p10), formatCI_(cis.p50),
+      formatCI_(cis.p90), formatCI_(cis.p95), formatCI_(cis.p99)
+    ]);
+  }
+  if (ciRows.length > 0) {
+    sheet.getRange(ciStartRow + 3, 1, ciRows.length, ciHeader.length).setValues(ciRows);
+  }
+
   // Histograms + CDF charts: write bin tables far to the right, then create charts.
-  writeHistogramsAndCharts_(sheet, sim, stats, convStartRow + convRows.length + 5);
+  writeHistogramsAndCharts_(sheet, sim, stats, ciStartRow + ciRows.length + 5);
 
   // Autoresize the main columns.
   for (var col = 1; col <= statsHeader.length; col++) sheet.autoResizeColumn(col);

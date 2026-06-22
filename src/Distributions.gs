@@ -88,57 +88,45 @@ function inverseNormalCDF_(p) {
 // Samplers
 // =====================================================================
 
+// Every distribution samples via an inverse-CDF transform of a SINGLE
+// uniform. One uniform per draw keeps the RNG stream aligned across
+// inputs and makes Latin Hypercube stratification correct — rejection
+// methods (Marsaglia polar, ziggurat) consume a variable number of
+// uniforms per draw, which would scramble a stratified stream.
+
+/** Clamp a uniform into the open interval (0,1) so inverse CDFs stay finite. */
+function clampUnit_(u) {
+  if (!(u > 0)) return 1e-15;          // also catches NaN
+  if (u >= 1) return 1 - 1e-15;
+  return u;
+}
+
 function sampleUniform_(rng, a, b) {
   return a + (b - a) * rng();
 }
 
-/**
- * Marsaglia polar method for generating standard normal samples.
- *
- * Each iteration of the polar loop produces TWO independent N(0,1) draws
- * from two uniforms. We return one and stash the other in a per-rng cache
- * so the next call to sampleNormal_ on the same rng is essentially free.
- *
- * Marsaglia polar is preferred over trig-form Box-Muller because it has
- * better numerical behavior at the tails (no cos/sin amplification of
- * floating-point error when one uniform is small).
- */
-var _normalCache_ = { rng: null, value: null };
-
-function resetNormalCache_() {
-  _normalCache_.rng = null;
-  _normalCache_.value = null;
+function normalFromU_(u, mean, sd) {
+  return mean + sd * inverseNormalCDF_(clampUnit_(u));
 }
 
 function sampleNormal_(rng, mean, sd) {
-  if (_normalCache_.rng === rng && _normalCache_.value !== null) {
-    var z = _normalCache_.value;
-    _normalCache_.value = null;
-    return mean + sd * z;
-  }
-  var u, v, s;
-  do {
-    u = 2 * rng() - 1;
-    v = 2 * rng() - 1;
-    s = u * u + v * v;
-  } while (s >= 1 || s === 0);
-  var f = Math.sqrt(-2 * Math.log(s) / s);
-  _normalCache_.rng = rng;
-  _normalCache_.value = v * f;
-  return mean + sd * (u * f);
+  return normalFromU_(rng(), mean, sd);
 }
 
 function sampleLogNormal_(rng, mu, sigma) {
-  return Math.exp(sampleNormal_(rng, mu, sigma));
+  return Math.exp(normalFromU_(rng(), mu, sigma));
+}
+
+function discreteFromU_(u, values, cumWeights) {
+  // cumWeights is a pre-normalized cumulative distribution (ends at 1).
+  for (var i = 0; i < cumWeights.length; i++) {
+    if (u < cumWeights[i]) return values[i];
+  }
+  return values[values.length - 1];
 }
 
 function sampleDiscrete_(rng, values, cumWeights) {
-  // cumWeights is pre-normalized cumulative distribution (ends at 1).
-  var r = rng();
-  for (var i = 0; i < cumWeights.length; i++) {
-    if (r < cumWeights[i]) return values[i];
-  }
-  return values[values.length - 1];
+  return discreteFromU_(rng(), values, cumWeights);
 }
 
 // =====================================================================
@@ -207,7 +195,8 @@ function buildSampler_(spec) {
       throw new Error(cellRef + ': Normal sd must be positive, got ' + np.sd);
     }
     return {
-      sample: function (rng) { return sampleNormal_(rng, np.mean, np.sd); },
+      fromU: function (u) { return normalFromU_(u, np.mean, np.sd); },
+      sample: function (rng) { return normalFromU_(rng(), np.mean, np.sd); },
       describe: function () { return 'Normal(mean=' + np.mean.toFixed(4) + ', sd=' + np.sd.toFixed(4) + ')'; }
     };
   }
@@ -221,7 +210,8 @@ function buildSampler_(spec) {
       throw new Error(cellRef + ': LogNormal sigma must be positive, got ' + lp.sigma);
     }
     return {
-      sample: function (rng) { return sampleLogNormal_(rng, lp.mu, lp.sigma); },
+      fromU: function (u) { return Math.exp(normalFromU_(u, lp.mu, lp.sigma)); },
+      sample: function (rng) { return Math.exp(normalFromU_(rng(), lp.mu, lp.sigma)); },
       describe: function () { return 'LogNormal(mu=' + lp.mu.toFixed(4) + ', sigma=' + lp.sigma.toFixed(4) + ')'; }
     };
   }
@@ -235,7 +225,8 @@ function buildSampler_(spec) {
       throw new Error(cellRef + ': Uniform b must exceed a, got a=' + up.a + ', b=' + up.b);
     }
     return {
-      sample: function (rng) { return sampleUniform_(rng, up.a, up.b); },
+      fromU: function (u) { return up.a + (up.b - up.a) * u; },
+      sample: function (rng) { return up.a + (up.b - up.a) * rng(); },
       describe: function () { return 'Uniform(' + up.a.toFixed(4) + ', ' + up.b.toFixed(4) + ')'; }
     };
   }
@@ -261,7 +252,8 @@ function buildSampler_(spec) {
     }
     cum[cum.length - 1] = 1;
     return {
-      sample: function (rng) { return sampleDiscrete_(rng, xs, cum); },
+      fromU: function (u) { return discreteFromU_(u, xs, cum); },
+      sample: function (rng) { return discreteFromU_(rng(), xs, cum); },
       describe: function () { return 'Discrete(' + xs.length + ' outcomes)'; }
     };
   }
@@ -350,7 +342,9 @@ if (typeof module !== 'undefined' && module.exports) {
     sampleNormal_: sampleNormal_,
     sampleLogNormal_: sampleLogNormal_,
     sampleDiscrete_: sampleDiscrete_,
-    resetNormalCache_: resetNormalCache_,
+    normalFromU_: normalFromU_,
+    discreteFromU_: discreteFromU_,
+    clampUnit_: clampUnit_,
     solveNormalFromQuantiles_: solveNormalFromQuantiles_,
     solveLogNormalFromQuantiles_: solveLogNormalFromQuantiles_,
     solveUniformFromQuantiles_: solveUniformFromQuantiles_,

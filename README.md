@@ -7,6 +7,7 @@ A few things to know up front:
 - It runs 10,000 iterations in around 30 seconds on a typical model.
 - Everything happens inside the sheet. There's no server, no login beyond the OAuth prompt the first time you run it, and no data leaves the spreadsheet.
 - The PRNG is seedable, and should replicate results if you use the same inputs, formulas, and seed.
+- Sampling uses Latin Hypercube stratification, so estimates converge faster than plain Monte Carlo at the same iteration count.
 
 
 ## Install
@@ -114,10 +115,11 @@ Since the evaluator is hand-written, there are some edge cases where the behavio
 
 Running the simulation creates, or overwrites, three sheets.
 
-**MC Results** has a row per output with the mean, the Monte Carlo standard error of the mean (±1.96·SE ≈ 95% CI), the median, stdev, min, max, percentiles P1–P99, effective N (count of finite samples), and the error count. Below the output stats there are three more sections:
+**MC Results** has a row per output with the mean, the Monte Carlo standard error of the mean (±1.96·SE ≈ 95% CI), the median, stdev, min, max, percentiles P1–P99, effective N (count of finite samples), and the error count. The metadata block at the top also records which sampling method the run used (Latin Hypercube, or IID for very large runs). Below the output stats there are four more sections:
 
 - **Distribution Inputs** — lists each input's specified distribution alongside the *actual* sampled mean, SD, P10, and P90 from the simulation. This is your sanity check. If you specified a LogNormal with p10=500, p90=2000, you'd expect the Sample P10 to be close to 500 and Sample P90 close to 2000. If they're wildly off, something is wrong with your parameterization, or you haven't run enough iterations for the tails to settle.
 - **Convergence Diagnostic** — splits the iterations into 4 equal batches, computes the mean of each batch independently, and reports the coefficient of variation (CV) of those batch means. Green (CV < 1%) means the simulation has converged and running more iterations wouldn't meaningfully change your results. Yellow (1–5%) means there's some wobble — tail percentiles might shift between runs. Red (> 5%) means the batch means disagree with each other and you should run more iterations. One nuance: the diagnostic checks whether the *mean* has converged. Tail percentiles converge more slowly, so even with a green CV you might want multiple runs if you're making a decision based on P95 or P99.
+- **Percentile Uncertainty** — 95% confidence intervals for P5, P10, P50, P90, P95, and P99 of each output, so you can see how much each reported percentile could move under re-simulation. A P95 of 48,200 with a CI of "47,900 to 48,600" is solid; a CI of "44,000 to 53,000" means you need more iterations before trusting that number.
 - **Histogram + CDF charts** per output. The histogram shows the distribution shape (log-spaced bins when the output is highly skewed). The CDF (cumulative distribution function) is the S-curve alongside it — the x-axis is the output value, the y-axis is P(output ≤ x). The CDF is more useful than the histogram for answering questions like "what's the probability profit exceeds $50,000?" — find $50k on the x-axis, read up to the curve, then left to the y-axis.
 
 **MC Sensitivity** shows the Spearman rank correlation between every input and every output, with conditional formatting (red for negative, blue for positive). Below the correlation matrix there's a **tornado chart** per output — a horizontal bar chart with inputs sorted by |ρ| descending. This is the standard "what matters most" visualization. A bar stretching to +0.8 means "when this input goes up, the output almost always goes up too, and strongly." A short bar near 0 means "no clear monotonic effect" — but see the caveats in the statistics section below about interactions and non-monotonic relationships.
@@ -132,7 +134,7 @@ If you're using this tool for anything load-bearing, I'd recommend reading this 
 
 **Mean is conditional on success when Errors is greater than zero.** If some iterations error out (say, `LN(X)` hits a negative `X` once in 200 draws), those iterations are dropped from the mean calculation. What gets reported is `E[output | output is finite]`, not the unconditional expectation. If errors correlate with one tail of the distribution — which they usually do, because they happen when an input went somewhere bad — the reported mean is biased toward the safe tail. The Results sheet shows a warning banner when this happens.
 
-**There are no confidence intervals on the percentiles.** The tool reports `Mean SE` alongside the mean, which gives a 95% CI on the mean as `Mean ± 1.96·SE`. But it doesn't do the same for P5, P95, P99, and so on. Tail-percentile estimates have a lot more variance than central ones. At N=10,000, P99 can shift by several percent between runs with different seeds. If you're making a decision based on a tail percentile, I'd recommend running the simulation 5 to 10 times with different seeds to see the spread.
+**Percentile CIs are conservative and get ragged in the extreme tails.** The Percentile Uncertainty table reports 95% confidence intervals from order statistics, with no assumptions about the underlying distribution. Two caveats. First, under Latin Hypercube sampling the intervals (and the reported Mean SE) are conservative — the true uncertainty is usually somewhat smaller, which is the safe direction to be wrong in. Second, beyond P99 or with only a few thousand effective samples, order-statistic CIs get very wide. If you're making a decision based on an extreme tail, I'd still recommend running the simulation several times with different seeds and looking at the spread directly.
 
 **Spearman isn't "input importance."** The MC Sensitivity sheet shows Spearman rank correlation. ρ near 0 doesn't mean an input is unimportant. It only means the input doesn't have a monotonic relationship with the output. A few examples that defeat Spearman:
 
@@ -196,7 +198,7 @@ src/
 tests/
   harness.js              VM-based shared-context loader + test framework
   *.test.js               Node unit and integration tests
-  smoke-test.jxa.js       20 smoke tests you can run via osascript (no install)
+  smoke-test.jxa.js       29 smoke tests you can run via osascript (no install)
   run-tests.js            Runs everything
 
 dist/
@@ -221,7 +223,7 @@ If you don't have Node installed, you can still run a representative subset on m
 /usr/bin/osascript -l JavaScript tests/smoke-test.jxa.js
 ```
 
-That runs 20 tests covering the PRNG (including seed mixing and seed=0), the parser, the evaluator (including error propagation), end-to-end simulation, quantile-mode sampling, cycle detection, sensitivity analysis, the ModelReader, log-spaced histograms for skewed data, and Pearson on zero-variance inputs.
+That runs 29 tests covering the PRNG (including seed mixing and seed=0), the parser, the evaluator (including error propagation and lazy `IF`), end-to-end simulation, quantile-mode sampling, Latin Hypercube stratification and reproducibility, percentile confidence intervals, cycle detection, sensitivity analysis, the ModelReader, log-spaced histograms for skewed data, and Pearson on zero-variance inputs.
 
 If you do have Node, you can run the full suite:
 
